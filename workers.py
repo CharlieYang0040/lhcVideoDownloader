@@ -211,6 +211,7 @@ class DownloadWorker(BaseWorker):
                 'quiet': False,
                 'no_warnings': False,
                 'format': 'bv*[ext=mp4]+ba*[ext=m4a]/b*[ext=mp4]/bestvideo+bestaudio/best',
+                'no_mtime': True,
                 'outtmpl': self.output_file,
                 'progress_hooks': [self.progress_hook],
                 'merge_output_format': 'mp4',

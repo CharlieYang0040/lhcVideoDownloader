@@ -3,6 +3,7 @@ import os
 import uuid # 고유 ID 생성용
 from PySide6.QtCore import QObject, Signal, Slot
 from workers import ExtractWorker, DownloadWorker, BaseWorker # 워커 클래스 임포트
+import sys # _get_ffmpeg_path (임시) 및 os.utime 사용
 
 log = logging.getLogger(__name__)
 
@@ -164,7 +165,6 @@ class TaskManager(QObject):
             task_status = self.task_info[task_id].get('status', 'Unknown')
             log.debug(f"Handling finish signal for task {task_id} with status: {task_status}")
 
-            # --- 로직 수정 --- 
             if task_status == 'Extracting':
                 if success:
                     # 추출 성공 시에는 _handle_extract_result에서 DownloadWorker를 시작하므로,
@@ -185,6 +185,21 @@ class TaskManager(QObject):
                  status_msg = "completed successfully" if success else "failed or was cancelled"
                  log.info(f"[{task_id}] Download {status_msg}. Cleaning up task.")
                  self.log_updated.emit(f"[{task_id}] Download {status_msg}.")
+                 
+                 # --- 수정 시간 업데이트 로직 추가 --- 
+                 if success:
+                     output_file = self.task_info[task_id].get('output_file')
+                     if output_file and os.path.exists(output_file):
+                         try:
+                             # 현재 시간으로 수정 시간 및 접근 시간 업데이트
+                             os.utime(output_file, None) 
+                             log.info(f"[{task_id}] Updated modification time for {output_file}")
+                         except Exception as e:
+                             log.error(f"[{task_id}] Failed to update modification time for {output_file}: {e}")
+                     else:
+                          log.warning(f"[{task_id}] Output file path not found or file does not exist, cannot update mtime.")
+                 # --- 수정 시간 업데이트 로직 끝 --- 
+                 
                  self.task_finished.emit(task_id, success)
                  self._cleanup_task(task_id)
             elif task_status == 'Cancelling':
@@ -197,7 +212,6 @@ class TaskManager(QObject):
                  log.warning(f"[{task_id}] Worker finished in unexpected state: {task_status}. Cleaning up.")
                  self.task_finished.emit(task_id, success) # 일단 받은 결과대로 보고
                  self._cleanup_task(task_id)
-            # --- 로직 수정 끝 --- 
 
         else:
             # task_info에 없는 ID (이미 정리되었거나 오류) 처리
