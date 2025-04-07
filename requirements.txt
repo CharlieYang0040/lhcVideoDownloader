@@ -1,3 +1,6 @@
 PySide6
 yt_dlp
 cryptography
+requests
+py7zr
+tqdm

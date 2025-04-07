@@ -44,6 +44,40 @@ if exist "%~dp0\requirements.txt" (
     echo 필요한 패키지가 설치되지 않을 수 있습니다.
 )
 
+echo.
+
+@REM --- FFmpeg 설치 스크립트 실행 준비 및 실행 --- 
+@REM FFmpeg 설치 스크립트 실행에 필요한 추가 패키지 설치
+echo FFmpeg 설치 스크립트에 필요한 추가 패키지를 설치합니다 (requests, py7zr, tqdm)...
+"%VIRTUAL_ENV%\Scripts\pip" install requests py7zr tqdm
+if %ERRORLEVEL% neq 0 (
+    echo FFmpeg 설치용 패키지 설치 중 오류가 발생했습니다.
+    echo FFmpeg 자동 설치가 실패할 수 있습니다.
+    pause
+) else (
+    echo FFmpeg 설치용 패키지 설치 완료.
+)
+
+echo.
+
+echo FFmpeg 설치 상태를 확인하고 필요시 설치합니다...
+if exist "%~dp0\install_ffmpeg_bin.py" (
+    "%VIRTUAL_ENV%\Scripts\python.exe" "%~dp0\install_ffmpeg_bin.py"
+    if %ERRORLEVEL% neq 0 (
+        echo FFmpeg 설치/확인 중 오류가 발생했습니다.
+        echo 앱 실행에 문제가 있을 수 있습니다.
+        pause
+    ) else (
+        echo FFmpeg 준비 완료.
+    )
+) else (
+    echo 경고: install_ffmpeg_bin.py 파일을 찾을 수 없습니다.
+    echo FFmpeg 자동 설치를 건너뛰었습니다. libs 폴더에 수동으로 설치해야 할 수 있습니다.
+)
+
+echo.
+@REM --- FFmpeg 설치 스크립트 실행 끝 --- 
+
 set "PATH=%VIRTUAL_ENV%\Scripts;%PATH%"
 set "PYTHONPATH=%VIRTUAL_ENV%\Lib\site-packages;%PYTHONPATH%"
 
