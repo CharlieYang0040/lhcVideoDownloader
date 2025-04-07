@@ -102,29 +102,44 @@ class ConfigManager:
         except Exception as e:
             print(f"[ConfigManager] 쿠키 파일 삭제 중 오류: {e}")
 
-    # 필요시 다른 설정 저장/로드 메서드는 여기에 추가 가능
-    # def save_setting(self, key, value):
-    #     # 예: JSON 파일 사용
-    #     config_path = os.path.join(self.config_dir, 'app_settings.json')
-    #     settings = self.load_all_settings()
-    #     settings[key] = value
-    #     try:
-    #         with open(config_path, 'w', encoding='utf-8') as f:
-    #             json.dump(settings, f, indent=4)
-    #     except Exception as e:
-    #         print(f"[ConfigManager] 설정 저장 오류: {e}")
+    # --- 설정 저장/로드 메서드 추가 ---
+    def get_settings_file_path(self):
+        """설정 파일 경로 반환"""
+        return os.path.join(self.config_dir, 'app_settings.json')
 
-    # def load_setting(self, key, default=None):
-    #     settings = self.load_all_settings()
-    #     return settings.get(key, default)
-    
-    # def load_all_settings(self):
-    #     config_path = os.path.join(self.config_dir, 'app_settings.json')
-    #     if os.path.exists(config_path):
-    #         try:
-    #             with open(config_path, 'r', encoding='utf-8') as f:
-    #                 return json.load(f)
-    #         except Exception as e:
-    #             print(f"[ConfigManager] 설정 로드 오류: {e}")
-    #             return {}
-    #     return {}
+    def load_all_settings(self):
+        """JSON 설정 파일 로드"""
+        config_path = self.get_settings_file_path()
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except json.JSONDecodeError:
+                print(f"[ConfigManager] 설정 파일 JSON 디코딩 오류: {config_path}")
+                return {}
+            except Exception as e:
+                print(f"[ConfigManager] 설정 파일 로드 오류: {e}")
+                return {}
+        return {}
+
+    def save_setting(self, key, value):
+        """특정 설정을 JSON 파일에 저장"""
+        settings = self.load_all_settings()
+        settings[key] = value
+        config_path = self.get_settings_file_path()
+        try:
+            # 설정 디렉토리가 없는 경우 생성
+            os.makedirs(os.path.dirname(config_path), exist_ok=True)
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(settings, f, indent=4)
+            print(f"[ConfigManager] 설정 저장: {key} = {value} in {config_path}")
+        except Exception as e:
+            print(f"[ConfigManager] 설정 저장 오류: {e}")
+
+    def load_setting(self, key, default=None):
+        """특정 설정을 JSON 파일에서 로드"""
+        settings = self.load_all_settings()
+        value = settings.get(key, default)
+        print(f"[ConfigManager] 설정 로드: {key} = {value} (default: {default})")
+        return value
+    # --- 설정 저장/로드 메서드 끝 ---

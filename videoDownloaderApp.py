@@ -4,7 +4,7 @@ import logging
 import logging.handlers
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QLabel,
                                QLineEdit, QPushButton, QFileDialog, QTextEdit, QProgressBar, QHBoxLayout,
-                               QMessageBox)
+                               QMessageBox, QListWidget, QListWidgetItem, QDialog, QMenu)
 from PySide6.QtCore import Signal, Slot, QThread, Qt
 import yt_dlp
 from youtube_auth import YouTubeAuthWindow
@@ -13,6 +13,8 @@ import tempfile
 import json
 import subprocess
 import atexit
+from workers import ExtractWorker, DownloadWorker, BaseWorker
+from task_manager import TaskManager
 
 # 로그 포맷터 설정
 log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -21,215 +23,65 @@ log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger()
 log.setLevel(logging.DEBUG) # 로그 레벨 설정
 
-class MyLogger:
-    def __init__(self, log_signal):
-        self.log_signal = log_signal
-        # 클래스 인스턴스별 로거 대신 전역 로거 사용
-        # self.logger = logging.getLogger(self.__class__.__name__)
-    def debug(self, msg):
-        # 표준 로거 사용
-        logging.debug(msg)
-        # 기존 시그널 방출 유지 (GUI 업데이트용)
-        self.log_signal.emit(f"[DEBUG] {msg}")
-    def warning(self, msg):
-        logging.warning(msg)
-        self.log_signal.emit(f"[WARNING] {msg}")
-    def error(self, msg):
-        logging.error(msg)
-        self.log_signal.emit(f"[ERROR] {msg}")
-
-class ExtractWorker(QThread):
-    progress_signal = Signal(str)
-    result_signal = Signal(dict)
-
-    def __init__(self, url, cookie_file=None):
-        super().__init__()
-        self.url = url
-        self.cookie_file = cookie_file
-        
-    def run(self):
-        try:
-            self.progress_signal.emit(f"Attempting to connect to YouTube URL: {self.url}")
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True
-            }
-            
-            if self.cookie_file:
-                ydl_opts['cookiefile'] = self.cookie_file
-                logging.info(f"[ExtractWorker] Using cookie file: {self.cookie_file}")
-                
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                self.progress_signal.emit("Retrieving video information...")
-                info = ydl.extract_info(self.url, download=False)
-                if not info:
-                    self.result_signal.emit({"title": "Unknown", "formats": [], "error": "Failed to retrieve video information"})
-                    return
-
-                title = info.get('title', f"video_{info.get('id', 'unknown')}")
-                self.progress_signal.emit(f"Found title: {title}")
-
-                seen_resolutions = set()
-                formats = []
-                
-                for f in info['formats']:
-                    if (f.get('height') and f.get('vcodec') != 'none'):
-                        resolution = f'{f.get("height")}p'
-                        if resolution not in seen_resolutions:
-                            seen_resolutions.add(resolution)
-                            formats.append({
-                                'resolution': resolution,
-                                'format_id': f['format_id'],
-                                'ext': f.get('ext', ''),
-                                'vcodec': f.get('vcodec', ''),
-                                'acodec': f.get('acodec', '')
-                            })
-                            self.progress_signal.emit(f"Found format: {resolution} ({f.get('ext', 'unknown')})")
-
-                if not formats:
-                    self.result_signal.emit({"title": title, "formats": [], "error": "No compatible video formats found"})
-                    return
-
-                formats.sort(key=lambda x: int(x['resolution'].replace('p', '')), reverse=True)
-
-                self.result_signal.emit({"title": title, "formats": formats, "error": None})
-        except Exception as e:
-            self.result_signal.emit({"title": "Unknown", "formats": [], "error": f"Error: {str(e)}"})
-
-
-class DownloadWorker(QThread):
-    progress_signal = Signal(int, int)
-    log_signal = Signal(str)
-    finished_signal = Signal(bool)
-
-    def __init__(self, url, output_file, ffmpeg_path, cookie_file=None):
-        super().__init__()
-        self.url = url
-        self.output_file = output_file
-        self.ffmpeg_path = ffmpeg_path
-        self.cookie_file = cookie_file
-        self.ydl_opts = {}  # ydl_opts 초기화
-        
-    def progress_hook(self, d):
-        if d['status'] == 'downloading':
-            downloaded = d.get('downloaded_bytes', 0)
-            total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
-            
-            if total > 0:  # total이 유효한 값일 때만 진행률 계산
-                progress = int((downloaded / total) * 100)
-                self.progress_signal.emit(progress, 100)
-                
-                speed = d.get('speed', 0)
-                eta = d.get('eta', 0)
-                
-                if speed and speed > 1024*1024:  # speed가 None이 아닐 때만 계산
-                    speed_str = f"{speed/(1024*1024):.2f} MB/s"
-                elif speed and speed > 1024:
-                    speed_str = f"{speed/1024:.2f} KB/s"
-                else:
-                    speed_str = f"{speed:.2f} B/s" if speed else "Unknown speed"
-                    
-                eta_str = f"{eta}s" if eta else "Unknown"
-                self.log_signal.emit(f"다운로드 진행률: {progress}% | 속도: {speed_str} | 남은 시간: {eta_str}")
-        
-        elif d['status'] == 'started':
-            self.log_signal.emit("FFmpeg로 인코딩 중입니다. 잠시 기다려주세요...")
-            self.progress_signal.emit(0, 0)
-        
-        elif d['status'] == 'processing':
-            # FFmpeg 처리 상태 표시
-            progress = d.get('percent', 0)
-            if progress:
-                self.progress_signal.emit(int(progress), 100)
-                self.log_signal.emit(f"FFmpeg 인코딩 진행률: {int(progress)}%")
-        
-        elif d['status'] == 'finished':
-            self.log_signal.emit("인코딩이 완료되었습니다!")
-            self.progress_signal.emit(100, 100)
-        
-    def run(self):
-        try:
-            if not os.path.exists(self.ffmpeg_path):
-                logging.error(f"FFmpeg not found at {self.ffmpeg_path}")
-                self.log_signal.emit(f"Warning: FFmpeg not found at {self.ffmpeg_path}")
-                self.finished_signal.emit(False)
-                return
-
-            logging.info(f"Using FFmpeg from: {self.ffmpeg_path}")
-            logging.info(f"Output file: {self.output_file}")
-            self.log_signal.emit("Starting download, conversion, and thumbnail embedding...")
-
-            logger = MyLogger(self.log_signal)
-            ydl_opts = {
-                'logger': logger,
-                'verbose': True,
-                'quiet': False,
-                'no_warnings': False,
-                'format': 'bv*[ext=mp4]+ba*[ext=m4a]/b*[ext=mp4]/bestvideo+bestaudio/best',
-                'outtmpl': self.output_file,
-                'progress_hooks': [self.progress_hook],
-                'merge_output_format': 'mp4',
-                'ffmpeg_location': self.ffmpeg_path,
-                'force_overwrites': True,
-                'writethumbnail': True,
-                'concurrent_fragment_downloads': 8,
-                'postprocessor_args': {
-                    'ffmpeg': [
-                        '-loglevel', 'info',
-                        '-progress', 'pipe:1'
-                    ],
-                    'default': [
-                        '-c:v', 'libx264',
-                        '-preset', 'medium',
-                        '-crf', '23',
-                        '-c:a', 'aac',
-                        '-b:a', '192k',
-                        '-movflags', '+faststart'
-                    ]
-                },
-                'postprocessors': [
-                    {
-                        'key': 'FFmpegVideoConvertor',
-                        'preferedformat': 'mp4'
-                    },
-                    {
-                        'key': 'FFmpegMetadata',
-                        'add_metadata': True
-                    }
-                ]
-            }
-
-            if self.cookie_file:
-                ydl_opts['cookiefile'] = self.cookie_file
-                logging.info(f"[DownloadWorker] Using cookie file: {self.cookie_file}")
-                
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([self.url])
-
-            logging.info("Download, conversion, metadata insertion, and thumbnail embedding completed successfully!")
-            self.log_signal.emit("Download, conversion, metadata insertion, and thumbnail embedding completed successfully!")
-            self.finished_signal.emit(True)
-        except Exception as e:
-            logging.exception("Download failed")
-            self.log_signal.emit(f"Download failed: {str(e)}")
-            self.finished_signal.emit(False)
-
-
 class VideoDownloaderApp(QMainWindow):
-    update_progress = Signal(int, int)
-    log_message = Signal(str)
-
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("YouTube Video Downloader")
-        self.setGeometry(200, 200, 600, 450)
         
-        # ConfigManager 인스턴스 생성 복구
+        # --- 로깅 설정 (가장 먼저 수행) ---
+        try:
+            log_dir_name = "logs"
+            if getattr(sys, 'frozen', False):
+                app_dir = os.path.dirname(sys.executable)
+            else:
+                # __file__은 현재 파일 경로를 나타냄
+                app_dir = os.path.dirname(os.path.abspath(__file__)) 
+            
+            log_dir = os.path.join(app_dir, log_dir_name)
+            os.makedirs(log_dir, exist_ok=True)
+            log_file = os.path.join(log_dir, 'app.log')
+
+            # 핸들러 중복 추가 방지
+            if not any(isinstance(h, logging.handlers.RotatingFileHandler) and h.baseFilename == log_file for h in log.handlers):
+                file_handler = logging.handlers.RotatingFileHandler(
+                    log_file, maxBytes=5*1024*1024, backupCount=3, encoding='utf-8')
+                file_handler.setFormatter(log_formatter)
+                file_handler.setLevel(logging.DEBUG)
+                log.addHandler(file_handler)
+                print(f"File handler added for: {log_file}") # 핸들러 추가 확인용 출력
+            else:
+                print(f"File handler for {log_file} already exists.")
+
+            logging.info("--- Application Started ---")
+            logging.info(f"Log file path: {log_file}")
+        except Exception as e:
+            print(f"Error setting up logging: {e}") 
+        # --- 로깅 설정 끝 ---
+        
+        self.setWindowTitle("YouTube Video Downloader")
+        self.setGeometry(200, 200, 700, 550)
+        
         self.config_manager = ConfigManager()
-        # 임시 쿠키 파일 경로 저장 변수
         self.temp_cookie_file_path = None
-        # 종료 시 임시 파일 정리 등록
         atexit.register(self.cleanup_temp_files)
+        atexit.register(self.save_current_settings)
+
+        # --- FFmpeg 경로 결정 --- 
+        self.ffmpeg_path = self._determine_ffmpeg_path()
+        if not self.ffmpeg_path or not os.path.exists(self.ffmpeg_path):
+             error_msg = f"FFmpeg를 찾을 수 없습니다. 예상 경로: {self.ffmpeg_path if self.ffmpeg_path else '경로 미설정'}"
+             logging.error(error_msg)
+             QMessageBox.critical(self, "치명적 오류", f"{error_msg}\n프로그램을 종료합니다.")
+             sys.exit(1) # FFmpeg 없으면 종료
+        logging.info(f"Using FFmpeg at: {self.ffmpeg_path}")
+
+        # --- Task Manager 초기화 --- 
+        # TaskManager 생성 시 ffmpeg_path 전달
+        self.task_manager = TaskManager(ffmpeg_path=self.ffmpeg_path)
+        self.task_manager.log_updated.connect(self.append_log)
+        self.task_manager.task_progress.connect(self.update_task_progress)
+        self.task_manager.task_finished.connect(self.handle_task_finished)
+        # task_added 시그널 연결 추가
+        self.task_manager.task_added.connect(self.add_task_to_list)
         
         # UI 초기화
         self.main_widget = QWidget()
@@ -274,7 +126,12 @@ class VideoDownloaderApp(QMainWindow):
         self.save_path_btn.clicked.connect(self.choose_save_path)
         self.save_path_display = QLabel("Not selected")
 
-        self.progress_bar = QProgressBar()
+        # --- 다운로드 목록 UI 추가 --- 
+        self.task_list_label = QLabel("Active Downloads:")
+        self.task_list_widget = QListWidget()
+        self.task_list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.task_list_widget.customContextMenuRequested.connect(self.show_task_context_menu) 
+
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
 
@@ -285,27 +142,44 @@ class VideoDownloaderApp(QMainWindow):
         self.layout.addWidget(self.save_path_btn)
         self.layout.addWidget(self.save_path_display)
         self.layout.addWidget(self.download_btn)
-        self.layout.addWidget(QLabel("Download Progress:"))
-        self.layout.addWidget(self.progress_bar)
+        self.layout.addWidget(self.task_list_label)
+        self.layout.addWidget(self.task_list_widget)
         self.layout.addWidget(QLabel("Logs:"))
         self.layout.addWidget(self.log_output)
         
         self.main_widget.setLayout(self.layout)
         self.setCentralWidget(self.main_widget)
 
-        self.save_path = os.getcwd()
+        # 저장 경로 초기화 (설정 파일 로드 시도)
+        loaded_save_path = self.config_manager.load_setting('save_path', default=os.getcwd())
+        # 로드된 경로가 유효한지 확인
+        if os.path.isdir(loaded_save_path):
+            self.save_path = loaded_save_path
+            logging.info(f"이전 저장 경로 로드 성공: {self.save_path}")
+        else:
+            self.save_path = os.getcwd() # 유효하지 않으면 기본 경로 사용
+            logging.warning(f"이전 저장 경로({loaded_save_path})가 유효하지 않아 기본 경로({self.save_path})를 사용합니다.")
         self.save_path_display.setText(self.save_path)
-        self.video_info = None
-        self.extract_thread = None
-        self.download_thread = None
+        
         self.auth_window = None
 
-        self.update_progress.connect(self.update_progress_bar)
-        self.log_message.connect(self.append_log)
-
-        # 저장된 쿠키 로드 시도
         self.load_and_prepare_cookies()
     
+    def _determine_ffmpeg_path(self):
+        if getattr(sys, 'frozen', False):
+            base_path = getattr(sys, '_MEIPASS', os.path.abspath("."))
+            ffmpeg_path = os.path.join(base_path, 'libs', 'ffmpeg-7.1-full_build', 'bin', 'ffmpeg.exe')
+        else:
+            script_dir = os.path.dirname(__file__)
+            ffmpeg_path = os.path.join(script_dir, 'libs', 'ffmpeg-7.1-full_build', 'bin', 'ffmpeg.exe')
+        return ffmpeg_path
+
+    def save_current_settings(self):
+        """앱 종료 시 현재 설정을 저장"""
+        if self.save_path:
+            logging.info(f"앱 종료, 현재 저장 경로 저장: {self.save_path}")
+            self.config_manager.save_setting('save_path', self.save_path)
+
     def load_and_prepare_cookies(self):
         """저장된 쿠키를 로드하고 임시 파일로 준비"""
         logging.info("저장된 쿠키 로드 시도...")
@@ -362,10 +236,14 @@ class VideoDownloaderApp(QMainWindow):
             self.cleanup_temp_files() 
 
     def choose_save_path(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Save Directory")
+        # 기존 경로를 시작 지점으로 사용
+        start_dir = self.save_path if os.path.isdir(self.save_path) else os.getcwd()
+        folder = QFileDialog.getExistingDirectory(self, "Select Save Directory", dir=start_dir)
         if folder:
             self.save_path = folder
             self.save_path_display.setText(folder)
+            # 경로 변경 시 즉시 저장 (선택 사항)
+            # self.config_manager.save_setting('save_path', self.save_path)
 
     @Slot()
     def start_extraction(self):
@@ -377,97 +255,43 @@ class VideoDownloaderApp(QMainWindow):
             self.append_log("Please select a save directory.")
             return
 
-        self.append_log("Extracting video information...")
-        if self.extract_thread and self.extract_thread.isRunning():
-            self.append_log("Extraction is already running.")
-            return
+        logging.info(f"Requesting extraction for URL: {video_url}")
+        self.task_manager.start_new_task(video_url, self.save_path, self.temp_cookie_file_path)
 
-        self.extract_thread = ExtractWorker(video_url, cookie_file=self.temp_cookie_file_path)
-        self.extract_thread.progress_signal.connect(self.append_log)
-        self.extract_thread.result_signal.connect(self.handle_extract_result)
-        self.extract_thread.start()
+    @Slot(str, int, int)
+    def update_task_progress(self, task_id, value, max_value):
+        # task_id를 UserRole 데이터로 검색
+        for i in range(self.task_list_widget.count()):
+            item = self.task_list_widget.item(i)
+            if item.data(Qt.UserRole) == task_id:
+                # 진행률 텍스트 업데이트
+                item.setText(f"{task_id} - {value}% ({value}/{max_value})")
+                return # 찾았으면 종료
+        # 아이템이 없는 경우 (이론상 add_task_to_list가 먼저 호출되어야 함)
+        logging.warning(f"Progress update received for item not in list: {task_id}")
+        # 필요시 여기서 아이템을 추가할 수도 있음
+        # item = QListWidgetItem(f"{task_id} - {value}% ({value}/{max_value})")
+        # item.setData(Qt.UserRole, task_id)
+        # self.task_list_widget.addItem(item)
 
-    @Slot(dict)
-    def handle_extract_result(self, result):
-        self.video_info = result
-        if self.video_info["error"]:
-            logging.error(f"Error during extraction: {self.video_info['error']}")
-            self.append_log(f"Error during extraction: {self.video_info['error']}")
-            return
-
-        logging.info(f"Title: {self.video_info['title']}")
-        self.append_log(f"Title: {self.video_info['title']}")
-        if not self.video_info["formats"]:
-            logging.warning("No available formats found.")
-            self.append_log("No available formats found.")
-            return
-
-        self.append_log("Available Resolutions:")
-        for fmt in self.video_info["formats"]:
-            self.append_log(f"- {fmt['resolution']}")
-
-        safe_title = "".join([
-            c if c.isalnum() or c in (' ', '-', '_', '.', '[', ']') else '_'
-            for c in self.video_info['title']
-        ])
-
-        output_file = os.path.join(self.save_path, f"{safe_title}.mp4")
-
-        counter = 1
-        base_name = os.path.splitext(output_file)[0]
-        while os.path.exists(output_file):
-            output_file = f"{base_name}_{counter}.mp4"
-            counter += 1
-
-        if getattr(sys, 'frozen', False):
-            ffmpeg_path = os.path.join(sys._MEIPASS, 'libs', 'ffmpeg-7.1-full_build', 'bin', 'ffmpeg.exe')
-            logging.info(f"임시 디렉토리에서 FFmpeg 사용: {ffmpeg_path}")
-            self.append_log(f"임시 디렉토리에서 FFmpeg 사용: {ffmpeg_path}")
-        else:
-            script_dir = os.path.dirname(__file__)
-            ffmpeg_path = os.path.join(script_dir, 'libs', 'ffmpeg-7.1-full_build', 'bin', 'ffmpeg.exe')
-            logging.info(f"로컬 FFmpeg 사용: {ffmpeg_path}")
-            self.append_log(f"로컬 FFmpeg 사용: {ffmpeg_path}")
-
-        if not os.path.exists(ffmpeg_path):
-            error_msg = f"FFmpeg를 찾을 수 없습니다: {ffmpeg_path}"
-            logging.error(error_msg)
-            self.append_log(error_msg)
-            QMessageBox.critical(self, "오류", error_msg)
-            return
-
-        self.download_thread = DownloadWorker(
-            self.url_input.text(),
-            output_file,
-            ffmpeg_path,
-            cookie_file=self.temp_cookie_file_path
-        )
-        
-        self.download_thread.progress_signal.connect(self.update_progress_bar)
-        self.download_thread.log_signal.connect(self.append_log)
-        self.download_thread.finished_signal.connect(self.download_finished)
-        self.download_thread.start()
-
-    @Slot(bool)
-    def download_finished(self, success):
-        if success:
-            logging.info("Download process finished successfully.")
-            self.append_log("Download process finished successfully.")
-        else:
-            logging.warning("Download process ended with an error or was incomplete.")
-            self.append_log("Download process ended with an error or was incomplete.")
-
-    @Slot(int, int)
-    def update_progress_bar(self, value, max_value):
-        self.progress_bar.setMaximum(max_value)
-        self.progress_bar.setValue(value)
+    @Slot(str, bool)
+    def handle_task_finished(self, task_id, success):
+        logging.info(f"Handling finished task in UI: {task_id}, Success: {success}")
+        # task_id를 UserRole 데이터로 검색
+        for i in range(self.task_list_widget.count()):
+            item = self.task_list_widget.item(i)
+            if item.data(Qt.UserRole) == task_id:
+                status = "Completed" if success else "Failed"
+                item.setText(f"{task_id} - {status}")
+                 # 성공/실패에 따라 아이콘이나 색상 변경 등 추가 가능
+                # if not success:
+                #    item.setForeground(Qt.red)
+                return # 찾았으면 종료
+        logging.warning(f"Finished signal received for item not in list: {task_id}")
 
     @Slot(str)
     def append_log(self, message):
-        # GUI 로그창 업데이트
         self.log_output.append(message)
-        # 파일 로그 기록 (기존 로직 유지)
-        logging.info(message.replace('[DEBUG] ', '').replace('[WARNING] ', '').replace('[ERROR] ', ''))
 
     def paste_from_clipboard(self):
         clipboard = QApplication.clipboard()
@@ -496,10 +320,8 @@ class VideoDownloaderApp(QMainWindow):
     @Slot()
     def handle_login_completed(self):
         """로그인이 완료되면 쿠키를 다시 로드하고 상태 업데이트"""
-        # 슬롯 실행 시작 로깅
         logging.info("[App] handle_login_completed slot triggered.") 
         self.append_log("YouTube 로그인이 완료되었습니다.")
-        # 로그인 성공 후 쿠키 로드 및 임시 파일 재생성
         self.load_and_prepare_cookies()
 
     @Slot()
@@ -524,6 +346,34 @@ class VideoDownloaderApp(QMainWindow):
         except Exception as e:
             logging.exception("설정 폴더 열기 오류")
             self.append_log(f"설정 폴더를 여는 중 오류가 발생했습니다: {e}")
+
+    def show_task_context_menu(self, position):
+        item = self.task_list_widget.itemAt(position)
+        if item:
+            task_id = item.data(Qt.UserRole)
+            if task_id:
+                menu = QMenu()
+                cancel_action = menu.addAction("Cancel Task")
+                action = menu.exec(self.task_list_widget.mapToGlobal(position))
+                if action == cancel_action:
+                    logging.info(f"Requesting cancellation for task: {task_id}")
+                    self.task_manager.cancel_task(task_id)
+                    item.setText(f"{task_id} - Cancelling...")
+
+    @Slot(str, str)
+    def add_task_to_list(self, task_id, initial_status_text):
+        """새 작업을 다운로드 목록에 추가"""
+        # 중복 추가 방지 (ID가 동일한 아이템이 이미 있는지 확인)
+        items = self.task_list_widget.findItems(task_id, Qt.MatchExactly)
+        if not items:
+            item = QListWidgetItem(initial_status_text) # 초기 텍스트 설정
+            item.setData(Qt.UserRole, task_id) # UserRole에 task_id 저장
+            self.task_list_widget.addItem(item)
+            logging.info(f"Task added to list: {task_id}")
+        else:
+            # 이미 있다면 텍스트 업데이트 (예: 추출->다운로드 상태 변경 시)
+             items[0].setText(initial_status_text)
+             logging.info(f"Task status updated in list: {task_id}")
 
 
 if __name__ == "__main__":
