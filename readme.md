@@ -13,7 +13,7 @@
 
 **방법 2: 릴리즈 실행 파일 사용 (Windows)**
 
-1.  GitHub 저장소의 **[Releases 페이지](<여기에 릴리즈 다운로드 주소 입력>)** 로 이동합니다.
+1.  GitHub 저장소의 **[Releases 페이지](<https://github.com/CharlieYang0040/lhcVideoDownloader/releases/download/v1.0/videoDownloaderApp.exe>)** 로 이동합니다.
 2.  최신 릴리즈의 Assets 섹션에서 `.exe` 파일을 다운로드합니다.
 3.  다운로드한 `.exe` 파일을 직접 실행합니다. (Python 또는 라이브러리 설치 필요 없음)
 
