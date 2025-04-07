@@ -1,35 +1,51 @@
 import sys
 import os
+import logging
+import logging.handlers
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QLabel,
-                               QLineEdit, QPushButton, QFileDialog, QTextEdit, QProgressBar, QHBoxLayout)
-from PySide6.QtCore import Signal, Slot, QThread
+                               QLineEdit, QPushButton, QFileDialog, QTextEdit, QProgressBar, QHBoxLayout,
+                               QMessageBox)
+from PySide6.QtCore import Signal, Slot, QThread, Qt
 import yt_dlp
 from youtube_auth import YouTubeAuthWindow
+from config_manager import ConfigManager
 import tempfile
 import json
-import subprocess  # 파일 탐색기 실행용
+import subprocess
+import atexit
+
+# 로그 포맷터 설정
+log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+# 루트 로거 설정 (모든 로거에 적용)
+log = logging.getLogger()
+log.setLevel(logging.DEBUG) # 로그 레벨 설정
 
 class MyLogger:
     def __init__(self, log_signal):
         self.log_signal = log_signal
+        # 클래스 인스턴스별 로거 대신 전역 로거 사용
+        # self.logger = logging.getLogger(self.__class__.__name__)
     def debug(self, msg):
+        # 표준 로거 사용
+        logging.debug(msg)
+        # 기존 시그널 방출 유지 (GUI 업데이트용)
         self.log_signal.emit(f"[DEBUG] {msg}")
     def warning(self, msg):
+        logging.warning(msg)
         self.log_signal.emit(f"[WARNING] {msg}")
     def error(self, msg):
+        logging.error(msg)
         self.log_signal.emit(f"[ERROR] {msg}")
 
 class ExtractWorker(QThread):
     progress_signal = Signal(str)
     result_signal = Signal(dict)
 
-    def __init__(self, url):
+    def __init__(self, url, cookie_file=None):
         super().__init__()
         self.url = url
-        self.cookies = None
-        
-    def set_cookies(self, cookies):
-        self.cookies = cookies
+        self.cookie_file = cookie_file
         
     def run(self):
         try:
@@ -39,8 +55,9 @@ class ExtractWorker(QThread):
                 'no_warnings': True
             }
             
-            if self.cookies:
-                ydl_opts['cookiefile'] = self.cookies
+            if self.cookie_file:
+                ydl_opts['cookiefile'] = self.cookie_file
+                logging.info(f"[ExtractWorker] Using cookie file: {self.cookie_file}")
                 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 self.progress_signal.emit("Retrieving video information...")
@@ -81,17 +98,16 @@ class ExtractWorker(QThread):
 
 
 class DownloadWorker(QThread):
-    progress_signal = Signal(int, int)  # 진행률 업데이트
+    progress_signal = Signal(int, int)
     log_signal = Signal(str)
     finished_signal = Signal(bool)
 
-    def __init__(self, url, format_data, output_file, ffmpeg_path, cookies=None):
+    def __init__(self, url, output_file, ffmpeg_path, cookie_file=None):
         super().__init__()
         self.url = url
-        self.format_data = format_data
         self.output_file = output_file
         self.ffmpeg_path = ffmpeg_path
-        self.cookies = cookies
+        self.cookie_file = cookie_file
         self.ydl_opts = {}  # ydl_opts 초기화
         
     def progress_hook(self, d):
@@ -134,12 +150,13 @@ class DownloadWorker(QThread):
     def run(self):
         try:
             if not os.path.exists(self.ffmpeg_path):
+                logging.error(f"FFmpeg not found at {self.ffmpeg_path}")
                 self.log_signal.emit(f"Warning: FFmpeg not found at {self.ffmpeg_path}")
                 self.finished_signal.emit(False)
                 return
 
-            self.log_signal.emit(f"Using FFmpeg from: {self.ffmpeg_path}")
-            self.log_signal.emit(f"Output file: {self.output_file}")
+            logging.info(f"Using FFmpeg from: {self.ffmpeg_path}")
+            logging.info(f"Output file: {self.output_file}")
             self.log_signal.emit("Starting download, conversion, and thumbnail embedding...")
 
             logger = MyLogger(self.log_signal)
@@ -148,7 +165,7 @@ class DownloadWorker(QThread):
                 'verbose': True,
                 'quiet': False,
                 'no_warnings': False,
-                'format': self.format_data['format_id'],
+                'format': 'bv*[ext=mp4]+ba*[ext=m4a]/b*[ext=mp4]/bestvideo+bestaudio/best',
                 'outtmpl': self.output_file,
                 'progress_hooks': [self.progress_hook],
                 'merge_output_format': 'mp4',
@@ -182,50 +199,20 @@ class DownloadWorker(QThread):
                 ]
             }
 
-            if self.cookies:
-                ydl_opts['cookiefile'] = self.cookies
+            if self.cookie_file:
+                ydl_opts['cookiefile'] = self.cookie_file
+                logging.info(f"[DownloadWorker] Using cookie file: {self.cookie_file}")
                 
-            # 저장된 옵션 병합
-            if self.ydl_opts:
-                for key, value in self.ydl_opts.items():
-                    if key != 'postprocessor_args':
-                        ydl_opts[key] = value
-                    else:
-                        # postprocessor_args는 딕셔너리 병합이 필요함
-                        for pp_key, pp_value in value.items():
-                            if pp_key not in ydl_opts['postprocessor_args']:
-                                ydl_opts['postprocessor_args'][pp_key] = pp_value
-
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([self.url])
 
+            logging.info("Download, conversion, metadata insertion, and thumbnail embedding completed successfully!")
             self.log_signal.emit("Download, conversion, metadata insertion, and thumbnail embedding completed successfully!")
             self.finished_signal.emit(True)
         except Exception as e:
+            logging.exception("Download failed")
             self.log_signal.emit(f"Download failed: {str(e)}")
             self.finished_signal.emit(False)
-
-
-class ConfigManager:
-    def __init__(self):
-        # Windows의 경우 %APPDATA%/Local/LHCVideoDownloader 경로 사용
-        if os.name == 'nt':
-            self.config_file = os.path.join(os.getenv('LOCALAPPDATA'), 'LHCVideoDownloader', 'settings.json')
-        else:
-            self.config_file = os.path.expanduser('~/.config/lhcVideoDownloader.json')
-        
-        # 설정 파일 디렉토리 생성
-        os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
-
-    def load_cookies(self):
-        if os.path.exists(self.config_file):
-            with open(self.config_file, 'r') as f:
-                return f.read()
-        return None
-
-    def save_cookies(self, cookies):
-        with open(self.config_file, 'w') as f:
-            f.write(cookies)
 
 
 class VideoDownloaderApp(QMainWindow):
@@ -235,10 +222,14 @@ class VideoDownloaderApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("YouTube Video Downloader")
-        self.setGeometry(200, 200, 600, 400)
+        self.setGeometry(200, 200, 600, 450)
         
-        # ConfigManager 초기화
+        # ConfigManager 인스턴스 생성 복구
         self.config_manager = ConfigManager()
+        # 임시 쿠키 파일 경로 저장 변수
+        self.temp_cookie_file_path = None
+        # 종료 시 임시 파일 정리 등록
+        atexit.register(self.cleanup_temp_files)
         
         # UI 초기화
         self.main_widget = QWidget()
@@ -257,6 +248,27 @@ class VideoDownloaderApp(QMainWindow):
         self.download_btn = QPushButton("Extract and Download")
         self.download_btn.clicked.connect(self.start_extraction)
 
+        # --- 설정 버튼 영역 복구 --- 
+        self.settings_layout = QHBoxLayout()
+        
+        self.login_status_label = QLabel("로그아웃 상태")
+        self.login_status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.settings_layout.addWidget(self.login_status_label)
+        
+        self.login_btn = QPushButton("YouTube 로그인")
+        self.login_btn.clicked.connect(self.show_login_window)
+        self.settings_layout.addWidget(self.login_btn)
+
+        self.logout_btn = QPushButton("로그아웃")
+        self.logout_btn.clicked.connect(self.logout)
+        self.logout_btn.setVisible(False)
+        self.settings_layout.addWidget(self.logout_btn)
+        
+        self.open_config_btn = QPushButton("설정 폴더 열기")
+        self.open_config_btn.clicked.connect(self.open_config_folder)
+        self.settings_layout.addWidget(self.open_config_btn)
+        # --- 설정 버튼 영역 끝 --- 
+
         self.save_label = QLabel("Save Directory:")
         self.save_path_btn = QPushButton("Choose Folder")
         self.save_path_btn.clicked.connect(self.choose_save_path)
@@ -268,6 +280,7 @@ class VideoDownloaderApp(QMainWindow):
 
         self.layout.addWidget(self.url_label)
         self.layout.addLayout(self.url_layout)
+        self.layout.addLayout(self.settings_layout)
         self.layout.addWidget(self.save_label)
         self.layout.addWidget(self.save_path_btn)
         self.layout.addWidget(self.save_path_display)
@@ -285,50 +298,69 @@ class VideoDownloaderApp(QMainWindow):
         self.video_info = None
         self.extract_thread = None
         self.download_thread = None
+        self.auth_window = None
 
         self.update_progress.connect(self.update_progress_bar)
         self.log_message.connect(self.append_log)
 
-        # 설정 버튼 레이아웃
-        self.settings_layout = QHBoxLayout()
-        
-        # 로그인 버튼
-        self.login_btn = QPushButton("YouTube 로그인")
-        self.login_btn.clicked.connect(self.show_login_window)
-        self.settings_layout.addWidget(self.login_btn)
-        
-        # Config 폴더 열기 버튼
-        self.open_config_btn = QPushButton("설정 폴더 열기")
-        self.open_config_btn.clicked.connect(self.open_config_folder)
-        self.settings_layout.addWidget(self.open_config_btn)
-        
-        # 설정 레이아웃을 메인 레이아웃에 추가
-        self.layout.insertLayout(1, self.settings_layout)  # URL 입력란 아래에 추가
-        
-        self.youtube_cookies = None  # 쿠키 저장용 변수
-        
-        # 저장된 쿠키 확인 및 로드
-        self.load_saved_cookies()
+        # 저장된 쿠키 로드 시도
+        self.load_and_prepare_cookies()
     
-    def load_saved_cookies(self):
-        """저장된 쿠키 로드"""
-        saved_cookies = self.config_manager.load_cookies()
-        if saved_cookies:
-            # 임시 파일에 쿠키 저장
-            temp_cookie_file = tempfile.NamedTemporaryFile(
-                mode='w',
-                suffix='.txt',
-                delete=False
-            )
-            temp_cookie_file.write(saved_cookies)
-            temp_cookie_file.close()
-            
-            self.youtube_cookies = temp_cookie_file.name
-            self.append_log("저장된 로그인 정보를 불러왔습니다.")
-            
-            # 로그인 버튼 텍스트 변경
+    def load_and_prepare_cookies(self):
+        """저장된 쿠키를 로드하고 임시 파일로 준비"""
+        logging.info("저장된 쿠키 로드 시도...")
+        try:
+            # ConfigManager에서 복호화된 Netscape 문자열 로드
+            netscape_cookie_string = self.config_manager.load_cookies()
+            if netscape_cookie_string:
+                # 기존 임시 파일 정리
+                self.cleanup_temp_files()
+                
+                # 새 임시 파일 생성 (delete=False 중요!)
+                temp_cookie_file = tempfile.NamedTemporaryFile(
+                    mode='w', 
+                    suffix='.txt', 
+                    delete=False, # 프로세스 종료 후에도 유지되도록 함
+                    encoding='utf-8'
+                )
+                temp_cookie_file.write(netscape_cookie_string)
+                temp_cookie_file.close() # 파일 닫기 (경로만 사용)
+                
+                self.temp_cookie_file_path = temp_cookie_file.name
+                logging.info(f"임시 쿠키 파일 생성 완료: {self.temp_cookie_file_path}")
+                self.update_login_status(logged_in=True)
+            else:
+                logging.info("저장된 쿠키 없음.")
+                self.update_login_status(logged_in=False)
+        except Exception as e:
+            logging.exception("쿠키 로드/준비 중 오류 발생")
+            self.update_login_status(logged_in=False)
+            # 오류 시 임시 파일 경로 초기화
+            self.temp_cookie_file_path = None 
+
+    def cleanup_temp_files(self):
+        """앱 종료 시 임시 쿠키 파일 정리"""
+        if self.temp_cookie_file_path and os.path.exists(self.temp_cookie_file_path):
+            try:
+                os.remove(self.temp_cookie_file_path)
+                logging.info(f"임시 쿠키 파일 삭제: {self.temp_cookie_file_path}")
+                self.temp_cookie_file_path = None
+            except Exception as e:
+                logging.error(f"임시 쿠키 파일 삭제 오류: {e}")
+                
+    def update_login_status(self, logged_in):
+        """로그인 상태에 따라 UI 업데이트"""
+        if logged_in:
+            self.login_status_label.setText("로그인됨")
             self.login_btn.setText("다시 로그인")
-    
+            self.logout_btn.setVisible(True)
+        else:
+            self.login_status_label.setText("로그아웃 상태")
+            self.login_btn.setText("YouTube 로그인")
+            self.logout_btn.setVisible(False)
+            # 로그아웃 시 임시 파일 경로도 초기화
+            self.cleanup_temp_files() 
+
     def choose_save_path(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Save Directory")
         if folder:
@@ -350,9 +382,7 @@ class VideoDownloaderApp(QMainWindow):
             self.append_log("Extraction is already running.")
             return
 
-        self.extract_thread = ExtractWorker(video_url)
-        if self.youtube_cookies:  # 쿠키가 있다면 전달
-            self.extract_thread.set_cookies(self.youtube_cookies)
+        self.extract_thread = ExtractWorker(video_url, cookie_file=self.temp_cookie_file_path)
         self.extract_thread.progress_signal.connect(self.append_log)
         self.extract_thread.result_signal.connect(self.handle_extract_result)
         self.extract_thread.start()
@@ -361,11 +391,14 @@ class VideoDownloaderApp(QMainWindow):
     def handle_extract_result(self, result):
         self.video_info = result
         if self.video_info["error"]:
+            logging.error(f"Error during extraction: {self.video_info['error']}")
             self.append_log(f"Error during extraction: {self.video_info['error']}")
             return
 
+        logging.info(f"Title: {self.video_info['title']}")
         self.append_log(f"Title: {self.video_info['title']}")
         if not self.video_info["formats"]:
+            logging.warning("No available formats found.")
             self.append_log("No available formats found.")
             return
 
@@ -373,11 +406,8 @@ class VideoDownloaderApp(QMainWindow):
         for fmt in self.video_info["formats"]:
             self.append_log(f"- {fmt['resolution']}")
 
-        self.append_log("Starting download for the first available format...")
-        selected_format = self.video_info['formats'][0]
-
         safe_title = "".join([
-            c if c.isalnum() or c in (' ', '-', '_', '.', '[', ']') else '_' 
+            c if c.isalnum() or c in (' ', '-', '_', '.', '[', ']') else '_'
             for c in self.video_info['title']
         ])
 
@@ -389,31 +419,30 @@ class VideoDownloaderApp(QMainWindow):
             output_file = f"{base_name}_{counter}.mp4"
             counter += 1
 
-        # ffmpeg 경로 설정
         if getattr(sys, 'frozen', False):
-            # PyInstaller로 패키징된 실행 파일인 경우
             ffmpeg_path = os.path.join(sys._MEIPASS, 'libs', 'ffmpeg-7.1-full_build', 'bin', 'ffmpeg.exe')
+            logging.info(f"임시 디렉토리에서 FFmpeg 사용: {ffmpeg_path}")
             self.append_log(f"임시 디렉토리에서 FFmpeg 사용: {ffmpeg_path}")
         else:
-            # 일반 스크립트로 실행된 경우
-            user_name = os.getenv('USERNAME') or os.getenv('USER')
-            ffmpeg_path = rf'C:\Users\{user_name}\AppData\Local\LHCinema\ffmpegGUI\ffmpeg\ffmpeg.exe'
+            script_dir = os.path.dirname(__file__)
+            ffmpeg_path = os.path.join(script_dir, 'libs', 'ffmpeg-7.1-full_build', 'bin', 'ffmpeg.exe')
+            logging.info(f"로컬 FFmpeg 사용: {ffmpeg_path}")
             self.append_log(f"로컬 FFmpeg 사용: {ffmpeg_path}")
 
-        # FFmpeg가 존재하는지 확인
         if not os.path.exists(ffmpeg_path):
-            self.append_log(f"FFmpeg를 찾을 수 없습니다: {ffmpeg_path}")
+            error_msg = f"FFmpeg를 찾을 수 없습니다: {ffmpeg_path}"
+            logging.error(error_msg)
+            self.append_log(error_msg)
+            QMessageBox.critical(self, "오류", error_msg)
             return
 
         self.download_thread = DownloadWorker(
-            self.url_input.text(), 
-            selected_format, 
-            output_file, 
+            self.url_input.text(),
+            output_file,
             ffmpeg_path,
-            self.youtube_cookies  # 쿠키 전달
+            cookie_file=self.temp_cookie_file_path
         )
         
-        # progress_hook은 이미 DownloadWorker 클래스 내에 있으므로 직접 설정할 필요 없음
         self.download_thread.progress_signal.connect(self.update_progress_bar)
         self.download_thread.log_signal.connect(self.append_log)
         self.download_thread.finished_signal.connect(self.download_finished)
@@ -422,8 +451,10 @@ class VideoDownloaderApp(QMainWindow):
     @Slot(bool)
     def download_finished(self, success):
         if success:
+            logging.info("Download process finished successfully.")
             self.append_log("Download process finished successfully.")
         else:
+            logging.warning("Download process ended with an error or was incomplete.")
             self.append_log("Download process ended with an error or was incomplete.")
 
     @Slot(int, int)
@@ -433,39 +464,65 @@ class VideoDownloaderApp(QMainWindow):
 
     @Slot(str)
     def append_log(self, message):
+        # GUI 로그창 업데이트
         self.log_output.append(message)
+        # 파일 로그 기록 (기존 로직 유지)
+        logging.info(message.replace('[DEBUG] ', '').replace('[WARNING] ', '').replace('[ERROR] ', ''))
 
     def paste_from_clipboard(self):
-        """클립보드의 내용을 URL 입력창에 붙여넣습니다."""
         clipboard = QApplication.clipboard()
         self.url_input.setText(clipboard.text())
 
     def show_login_window(self):
         """YouTube 로그인 창을 표시"""
-        if hasattr(self, 'auth_window'):
-            self.auth_window.close()
-        self.auth_window = YouTubeAuthWindow()
-        self.auth_window.login_completed.connect(self.handle_login_completed)
+        logging.info("로그인 창 표시 요청")
+        if self.auth_window and self.auth_window.isVisible():
+            logging.info("로그인 창이 이미 열려 있음. 활성화.")
+            self.auth_window.activateWindow()
+            self.auth_window.raise_()
+            return
+
+        try:
+            logging.info("YouTubeAuthWindow 인스턴스 생성 시도...")
+            self.auth_window = YouTubeAuthWindow()
+            self.auth_window.login_completed.connect(self.handle_login_completed)
+            logging.info("YouTubeAuthWindow 생성 및 시그널 연결 완료.")
+        except Exception as e:
+            logging.exception("YouTubeAuthWindow 생성 중 오류")
+            self.append_log(f"로그인 창 생성 오류: {e}")
+            QMessageBox.critical(self, "로그인 오류", f"로그인 창을 생성하는 중 오류가 발생했습니다:\n{e}")
+            self.auth_window = None
     
-    def handle_login_completed(self, cookie_file):
-        """로그인이 완료되면 쿠키 파일 경로 저장"""
-        self.youtube_cookies = cookie_file
+    @Slot()
+    def handle_login_completed(self):
+        """로그인이 완료되면 쿠키를 다시 로드하고 상태 업데이트"""
+        # 슬롯 실행 시작 로깅
+        logging.info("[App] handle_login_completed slot triggered.") 
         self.append_log("YouTube 로그인이 완료되었습니다.")
-        self.login_btn.setText("다시 로그인")
+        # 로그인 성공 후 쿠키 로드 및 임시 파일 재생성
+        self.load_and_prepare_cookies()
+
+    @Slot()
+    def logout(self):
+        """로그아웃 처리: 저장된 쿠키 삭제 및 상태 업데이트"""
+        logging.info("로그아웃 요청")
+        self.config_manager.delete_cookies()
+        self.update_login_status(logged_in=False)
+        self.append_log("로그아웃 되었습니다.")
 
     def open_config_folder(self):
-        """설정 폴더를 파일 탐색기로 엽니다"""
-        config_path = os.path.dirname(self.config_manager.config_file)
+        """설정 폴더(쿠키 저장 폴더)를 파일 탐색기로 엽니다"""
+        config_path = self.config_manager.cookies_dir 
+        logging.info(f"설정 폴더 열기 요청: {config_path}")
         try:
-            # 설정 폴더가 없으면 생성
             os.makedirs(config_path, exist_ok=True)
-            
-            if os.name == 'nt':  # Windows
+            if os.name == 'nt':
                 os.startfile(config_path)
-            elif os.name == 'posix':  # macOS, Linux
+            elif os.name == 'posix':
                 subprocess.run(['xdg-open', config_path])
             self.append_log(f"설정 폴더를 열었습니다: {config_path}")
         except Exception as e:
+            logging.exception("설정 폴더 열기 오류")
             self.append_log(f"설정 폴더를 여는 중 오류가 발생했습니다: {e}")
 
 
