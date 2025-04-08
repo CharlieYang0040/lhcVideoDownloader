@@ -48,17 +48,17 @@ echo.
 
 @REM --- FFmpeg 설치 스크립트 실행 준비 및 실행 --- 
 @REM FFmpeg 설치 스크립트 실행에 필요한 추가 패키지 설치
-echo FFmpeg 설치 스크립트에 필요한 추가 패키지를 설치합니다 (requests, py7zr, tqdm)...
-"%VIRTUAL_ENV%\Scripts\pip" install requests py7zr tqdm
-if %ERRORLEVEL% neq 0 (
-    echo FFmpeg 설치용 패키지 설치 중 오류가 발생했습니다.
-    echo FFmpeg 자동 설치가 실패할 수 있습니다.
-    pause
-) else (
-    echo FFmpeg 설치용 패키지 설치 완료.
-)
+REM echo FFmpeg 설치 스크립트에 필요한 추가 패키지를 설치합니다 (requests, py7zr, tqdm)...
+REM "%VIRTUAL_ENV%\Scripts\pip" install requests py7zr tqdm
+REM if %ERRORLEVEL% neq 0 (
+REM     echo FFmpeg 설치용 패키지 설치 중 오류가 발생했습니다.
+REM     echo FFmpeg 자동 설치가 실패할 수 있습니다.
+REM     pause
+REM ) else (
+REM     echo FFmpeg 설치용 패키지 설치 완료.
+REM )
 
-echo.
+REM echo.
 
 echo FFmpeg 설치 상태를 확인하고 필요시 설치합니다...
 if exist "%~dp0\install_ffmpeg_bin.py" (

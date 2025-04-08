@@ -168,17 +168,24 @@ class VideoDownloaderApp(QMainWindow):
     def _determine_ffmpeg_path(self):
         if getattr(sys, 'frozen', False):
             base_path = getattr(sys, '_MEIPASS', os.path.abspath("."))
-            ffmpeg_path = os.path.join(base_path, 'libs', 'ffmpeg-7.1-full_build', 'bin', 'ffmpeg.exe')
+            ffmpeg_path = os.path.join(base_path, 'libs', 'ffmpeg', 'bin', 'ffmpeg.exe')
         else:
             script_dir = os.path.dirname(__file__)
-            ffmpeg_path = os.path.join(script_dir, 'libs', 'ffmpeg-7.1-full_build', 'bin', 'ffmpeg.exe')
+            ffmpeg_path = os.path.join(script_dir, 'libs', 'ffmpeg', 'bin', 'ffmpeg.exe')
         return ffmpeg_path
 
     def save_current_settings(self):
         """앱 종료 시 현재 설정을 저장"""
-        if self.save_path:
+        # 앱 종료 시점에 속성이 존재하지 않을 수 있으므로 hasattr로 확인
+        if hasattr(self, 'save_path') and self.save_path:
             logging.info(f"앱 종료, 현재 저장 경로 저장: {self.save_path}")
-            self.config_manager.save_setting('save_path', self.save_path)
+            # config_manager도 확인
+            if hasattr(self, 'config_manager'):
+                self.config_manager.save_setting('save_path', self.save_path)
+            else:
+                logging.warning("앱 종료 중 config_manager에 접근할 수 없습니다.")
+        else:
+            logging.info("앱 종료 중 save_path 속성을 찾을 수 없거나 비어 있습니다.")
 
     def load_and_prepare_cookies(self):
         """저장된 쿠키를 로드하고 임시 파일로 준비"""

@@ -3,7 +3,8 @@ import sys
 import requests
 import shutil
 import tempfile
-import py7zr # 7z 압축 해제를 위한 라이브러리
+# import subprocess # 7z.exe 호출 대신 zipfile 사용
+import zipfile # .zip 파일 처리를 위해 추가
 from tqdm import tqdm # 진행률 표시용 라이브러리
 import logging
 
@@ -11,7 +12,8 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- 설정값 --- 
-FFMPEG_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.7z"
+# FFMPEG_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.7z"
+FFMPEG_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" # .zip 파일로 변경
 # 압축 해제 후 예상되는 ffmpeg.exe의 상대 경로 (압축 파일 구조에 따라 달라질 수 있음)
 # 예: ffmpeg-6.1-essentials_build/bin/ffmpeg.exe -> 첫번째 폴더 이름은 가변적일 수 있음
 EXPECTED_FFMPEG_SUBPATH = os.path.join("bin", "ffmpeg.exe") 
@@ -19,7 +21,7 @@ EXPECTED_FFMPEG_SUBPATH = os.path.join("bin", "ffmpeg.exe")
 # 프로젝트 루트 디렉토리 기준 목표 경로 설정
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR) if os.path.basename(SCRIPT_DIR) == 'scripts' else SCRIPT_DIR # 스크립트 위치에 따라 조정
-TARGET_DIR = os.path.join(PROJECT_ROOT, "libs", "ffmpeg-7.1-full_build", "bin")
+TARGET_DIR = os.path.join(PROJECT_ROOT, "libs", "ffmpeg", "bin")
 TARGET_FFMPEG_PATH = os.path.join(TARGET_DIR, "ffmpeg.exe")
 # ------------- 
 
@@ -55,15 +57,25 @@ def download_file(url, destination):
         return False
 
 def extract_ffmpeg(archive_path, extract_to_dir):
-    """7z 아카이브에서 모든 파일을 지정된 디렉토리에 압축 해제"""
-    logging.info(f"Extracting archive: {archive_path} to {extract_to_dir}")
+    """ZIP 아카이브에서 모든 파일을 지정된 디렉토리에 압축 해제 (내장 zipfile 사용)"""
+    logging.info(f"Extracting ZIP archive: {archive_path} to {extract_to_dir} using zipfile")
     try:
-        with py7zr.SevenZipFile(archive_path, mode='r') as z:
-            z.extractall(path=extract_to_dir)
-        logging.info("Extraction completed.")
+        with zipfile.ZipFile(archive_path, 'r') as zip_ref:
+            # 압축 해제 진행률 표시 (선택 사항)
+            members = zip_ref.namelist()
+            total_files = len(members)
+            logging.info(f"Found {total_files} files in the archive.")
+            # tqdm 같은 라이브러리로 상세 진행률 표시 가능하나, 여기서는 단순화
+            # for member in tqdm(members, desc="Extracting files"):
+            #     zip_ref.extract(member, extract_to_dir)
+            zip_ref.extractall(extract_to_dir)
+        logging.info("Extraction completed successfully.")
         return True
+    except zipfile.BadZipFile:
+        logging.error(f"Failed to extract archive: The file is not a zip file or it is corrupted.")
+        return False
     except Exception as e:
-        logging.error(f"Failed to extract archive: {e}")
+        logging.error(f"An unexpected error occurred during extraction: {e}")
         return False
 
 def find_and_move_ffmpeg(extract_dir, target_path):
@@ -114,7 +126,8 @@ def main():
     # 임시 디렉토리 사용 (스크립트 종료 시 자동 삭제됨)
     with tempfile.TemporaryDirectory() as temp_dir:
         logging.info(f"Using temporary directory: {temp_dir}")
-        archive_dest_path = os.path.join(temp_dir, "ffmpeg.7z")
+        # archive_dest_path = os.path.join(temp_dir, "ffmpeg.7z")
+        archive_dest_path = os.path.join(temp_dir, "ffmpeg.zip") # 파일명 .zip으로 변경
         extract_dest_dir = os.path.join(temp_dir, "extracted")
 
         # 1. 파일 다운로드
@@ -135,16 +148,5 @@ def main():
     sys.exit(0) # 성공 종료
 
 if __name__ == "__main__":
-    # 필수 라이브러리 설치 확인 (선택적이지만, 사용자가 직접 실행 시 도움됨)
-    try:
-        import requests
-        import py7zr
-        import tqdm
-    except ImportError as e:
-        missing_lib = str(e).split("'")[-2]
-        print(f"Error: Required library '{missing_lib}' is not installed.")
-        print(f"Please install it using: pip install {missing_lib}")
-        # 또는 requirements_ffmpeg.txt 같은 파일을 만들어 설치 유도
-        sys.exit(1)
-        
+    # 필수 라이브러리 설치 확인 관련 try-except 블록 제거
     main()
