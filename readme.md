@@ -7,18 +7,20 @@
 
 ## 빠른 시작 (가장 쉬운 실행 방법)
 
-**방법 1: 배치 파일 실행 (Windows)**
+**방법 1: 릴리즈 실행 파일 사용 (Windows)**
+
+1.  이 **[다운로드 링크](<https://github.com/CharlieYang0040/lhcVideoDownloader/releases/download/v1.0.1/videoDownloaderApp.exe>)** 로 즉시 다운로드 합니다.
+2.  또는 GitHub 저장소의 Release 페이지로 이동하여 최신 릴리즈의 Assets 섹션에서 `.exe` 파일을 다운로드합니다.
+3.  다운로드한 `.exe` 파일을 직접 실행합니다. (Python 또는 라이브러리 설치 필요 없음)
+
+
+**방법 2: 배치 파일 실행 (Windows)**
 
 1.  이 저장소의 파일들을 다운로드하거나 `git clone` 받습니다.
 2.  다운로드한 폴더에서 `launch_VideoDownloader.bat` 파일을 더블 클릭하여 실행합니다.
 3.  스크립트가 자동으로 Python 설치 여부를 확인하고, 가상 환경을 설정하며, 필요한 라이브러리(**및 FFmpeg**)를 **확인하고 설치**합니다. (FFmpeg 다운로드 및 압축 해제에는 시간이 걸릴 수 있습니다.)
 4.  설치가 완료되면 애플리케이션이 자동으로 실행됩니다.
 
-**방법 2: 릴리즈 실행 파일 사용 (Windows)**
-
-1.  GitHub 저장소의 **[Releases 페이지](<https://github.com/CharlieYang0040/lhcVideoDownloader/releases/download/v1.0.1/videoDownloaderApp.exe>)** 로 이동합니다.
-2.  최신 릴리즈의 Assets 섹션에서 `.exe` 파일을 다운로드합니다.
-3.  다운로드한 `.exe` 파일을 직접 실행합니다. (Python 또는 라이브러리 설치 필요 없음)
 
 ---
 
