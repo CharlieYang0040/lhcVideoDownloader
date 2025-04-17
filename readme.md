@@ -1,6 +1,6 @@
 # LHC 비디오 다운로더 (LHC Video Downloader)
 
-파이썬과 PySide6 (Qt for Python)를 사용하여 만든 간단한 유튜브 비디오 다운로더 애플리케이션입니다.
+간단하게 최고화질의 비디오를 찾아서 다운로드 하는 애플리케이션입니다.
 
 ![이미지 설명](resources/screenshot.png)
 
