@@ -15,7 +15,6 @@ logging.basicConfig(
 )
 
 # --- 설정값 ---
-# FFMPEG_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.7z"
 FFMPEG_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"  # .zip 파일로 변경
 # 압축 해제 후 예상되는 ffmpeg.exe의 상대 경로 (압축 파일 구조에 따라 달라질 수 있음)
 # 예: ffmpeg-6.1-essentials_build/bin/ffmpeg.exe -> 첫번째 폴더 이름은 가변적일 수 있음

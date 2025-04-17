@@ -3,9 +3,8 @@ import os
 import uuid  # 고유 ID 생성용
 from enum import Enum, auto  # Enum 임포트 추가
 from PySide6.QtCore import QObject, Signal, Slot
-from config_manager import ConfigManager
-from workers import ExtractWorker, DownloadWorker, BaseWorker  # 워커 클래스 임포트
-import sys  # _get_ffmpeg_path (임시) 및 os.utime 사용
+from app.config_manager import ConfigManager
+from app.workers import ExtractWorker, DownloadWorker, BaseWorker  # 워커 클래스 임포트
 
 log = logging.getLogger(__name__)
 

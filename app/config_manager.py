@@ -3,7 +3,6 @@ import json
 import logging  # logging 임포트 추가
 import sys  # sys 임포트 추가 (for FFmpeg path)
 
-# from pathlib import Path # 현재 사용 안 함
 from cryptography.fernet import Fernet, InvalidToken  # InvalidToken 추가
 import base64
 
@@ -144,10 +143,9 @@ class ConfigManager:
             # 개발 환경 (스크립트 실행)
             # config_manager.py 파일의 위치를 기준으로 상대 경로 설정
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            # 프로젝트 루트에 모든 .py 파일이 있으므로, script_dir가 프로젝트 루트임
-            # 상위 디렉토리로 이동할 필요 없음
-            # project_root = os.path.abspath(os.path.join(script_dir, '..')) # 제거
-            ffmpeg_path = os.path.join(script_dir, "libs", "ffmpeg", "bin", "ffmpeg.exe") # script_dir 바로 아래 libs 탐색
+            # 프로젝트 루트는 script_dir의 상위 디렉토리
+            project_root = os.path.abspath(os.path.join(script_dir, '..'))
+            ffmpeg_path = os.path.join(project_root, "libs", "ffmpeg", "bin", "ffmpeg.exe")
 
         log.debug(f"Determined FFmpeg path: {ffmpeg_path}")
         # 최종 경로 존재 여부 확인 후 반환 (선택적이지만 더 안전)

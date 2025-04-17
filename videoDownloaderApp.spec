@@ -2,10 +2,10 @@
 
 
 a = Analysis(
-    ['videoDownloaderApp.py'],
+    ['main.py'],
     pathex=[],
     binaries=[('libs/ffmpeg/bin/ffmpeg.exe', 'libs/ffmpeg/bin')],
-    datas=[('icon.png', '.'), ('icon.ico', '.')],
+    datas=[('resources/icon.png', '.'), ('resources/icon.ico', '.')],
     hiddenimports=[
         'cryptography.hazmat.backends.openssl', # Cryptography 백엔드 명시적 포함
         'PySide6.QtWebEngineCore',             # QtWebEngine 관련 모듈 명시
@@ -62,5 +62,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='icon.ico',
+    icon='resources/icon.ico',
 )

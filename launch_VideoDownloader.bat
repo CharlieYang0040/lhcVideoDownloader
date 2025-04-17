@@ -98,10 +98,10 @@ echo 가상환경이 활성화되었습니다.
 echo.
 
 @REM main.py 실행
-if exist "%~dp0\videoDownloaderApp.py" (
-    "%VIRTUAL_ENV%\Scripts\python.exe" "%~dp0\videoDownloaderApp.py"
+if exist "%~dp0\main.py" (
+    "%VIRTUAL_ENV%\Scripts\python.exe" "%~dp0\main.py"
 ) else (
-    echo 오류: videoDownloaderApp.py 파일을 찾을 수 없습니다.
+    echo 오류: main.py 파일을 찾을 수 없습니다.
     pause
     exit /b 1
 )

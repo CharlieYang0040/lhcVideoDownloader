@@ -4,9 +4,7 @@ from PySide6.QtWebEngineCore import QWebEngineCookieStore, QWebEngineProfile
 from PySide6.QtCore import QUrl, Signal, Qt, QTimer
 import os
 
-# import tempfile # 현재 사용 안 함
-# import time # 현재 사용 안 함
-from config_manager import ConfigManager
+from app.config_manager import ConfigManager
 import logging
 
 # 모듈 로거

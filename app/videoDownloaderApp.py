@@ -2,6 +2,7 @@ import sys
 import os
 import logging
 import logging.handlers
+import webbrowser
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -22,15 +23,15 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Signal, Slot, QThread, Qt, QObject
 import yt_dlp
-from youtube_auth import YouTubeAuthWindow
-from config_manager import ConfigManager
+from app.youtube_auth import YouTubeAuthWindow
+from app.config_manager import ConfigManager
 import tempfile
 import json
 import subprocess
 import atexit
-from workers import ExtractWorker, DownloadWorker, BaseWorker
-from task_manager import TaskManager
-from logging_config import setup_logging, LOG_FORMAT
+from app.workers import ExtractWorker, DownloadWorker, BaseWorker
+from app.task_manager import TaskManager
+from app.logging_config import setup_logging, LOG_FORMAT
 
 
 # --- 로깅 시그널 발생기 --- (QObject 상속)
@@ -81,7 +82,7 @@ class VideoDownloaderApp(QMainWindow):
         super().__init__()
 
         # 1. 기본 윈도우 설정
-        self.setWindowTitle("YouTube Video Downloader")
+        self.setWindowTitle("LHC Video Downloader")
         self.setGeometry(200, 200, 700, 550)
 
         # 2. 비즈니스 로직 및 설정 초기화
@@ -122,8 +123,9 @@ class VideoDownloaderApp(QMainWindow):
         self.main_widget = QWidget()
 
         # URL 입력 영역
-        self.url_label = QLabel("YouTube Video URL:")
+        self.url_label = QLabel("Video URL:")
         self.url_input = QLineEdit()
+        self.url_input.setPlaceholderText("다운로드할 동영상 URL을 입력하세요 (예: YouTube, Vimeo, Instagram, CHZZK 등)")
         self.paste_btn = QPushButton("붙여넣기")
 
         # 다운로드 버튼
@@ -132,10 +134,18 @@ class VideoDownloaderApp(QMainWindow):
         # 설정 버튼 영역
         self.login_status_label = QLabel("로그아웃 상태")
         self.login_status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.login_btn = QPushButton("YouTube 로그인")
+        self.login_help_label = QLabel("ℹ️")
+        self.login_help_label.setToolTip(
+            "YouTube 등 일부 사이트의 연령 제한 영상 등은 로그인이 필요할 수 있습니다.\n"
+            "로그인이 필요한 경우, '사이트 로그인' 버튼을 클릭하고\n"
+            "로그인을 완료한 후 잠시 기다려주세요."
+        )
+        self.login_btn = QPushButton("사이트 로그인")
         self.logout_btn = QPushButton("로그아웃")
         self.logout_btn.setVisible(False)  # 초기 상태는 숨김
         self.open_config_btn = QPushButton("설정 폴더 열기")
+        self.open_save_folder_btn = QPushButton("Open Save Folder")
+        self.github_link_btn = QPushButton("GitHub")
 
         # 저장 경로 영역
         self.save_label = QLabel("Save Directory:")
@@ -152,13 +162,19 @@ class VideoDownloaderApp(QMainWindow):
         self.log_output.setReadOnly(True)
 
         # 로깅 관련 객체 생성 및 설정
-        self.log_emitter = LogSignalEmitter(self) # 시그널 발생기 (부모 지정 가능)
-        self.log_handler = QTextEditHandler(self.log_emitter) # 핸들러에 발생기 전달
+        self.log_emitter = LogSignalEmitter(self)
+        self.log_handler = QTextEditHandler(self.log_emitter)
         logging.getLogger().addHandler(self.log_handler)
         self.log_handler.setLevel(logging.INFO)
 
     def _setup_layout(self):
         """UI 위젯들을 레이아웃에 배치."""
+        # 맨 위 라벨 + GitHub 버튼 레이아웃
+        self.top_row_layout = QHBoxLayout()
+        self.top_row_layout.addWidget(self.url_label)
+        self.top_row_layout.addStretch(1)
+        self.top_row_layout.addWidget(self.github_link_btn)
+
         # URL 입력 레이아웃
         self.url_layout = QHBoxLayout()
         self.url_layout.addWidget(self.url_input)
@@ -166,18 +182,21 @@ class VideoDownloaderApp(QMainWindow):
 
         # 설정 버튼 레이아웃
         self.settings_layout = QHBoxLayout()
+        self.settings_layout.addStretch(1) # 왼쪽에 공간 추가하여 오른쪽 정렬 효과
         self.settings_layout.addWidget(self.login_status_label)
+        self.settings_layout.addWidget(self.login_help_label)
         self.settings_layout.addWidget(self.login_btn)
         self.settings_layout.addWidget(self.logout_btn)
         self.settings_layout.addWidget(self.open_config_btn)
 
         # 메인 수직 레이아웃
         self.layout = QVBoxLayout()
-        self.layout.addWidget(self.url_label)
+        self.layout.addLayout(self.top_row_layout)
         self.layout.addLayout(self.url_layout)
         self.layout.addLayout(self.settings_layout)
         self.layout.addWidget(self.save_label)
         self.layout.addWidget(self.save_path_btn)
+        self.layout.addWidget(self.open_save_folder_btn)
         self.layout.addWidget(self.save_path_display)
         self.layout.addWidget(self.download_btn)
         self.layout.addWidget(self.task_list_label)
@@ -198,6 +217,8 @@ class VideoDownloaderApp(QMainWindow):
         self.logout_btn.clicked.connect(self.logout)
         self.open_config_btn.clicked.connect(self.open_config_folder)
         self.save_path_btn.clicked.connect(self.choose_save_path)
+        self.open_save_folder_btn.clicked.connect(self.open_save_folder)
+        self.github_link_btn.clicked.connect(self.open_github_link)
 
         # Task Manager 시그널
         self.task_manager.task_progress.connect(self.update_task_progress)
@@ -294,7 +315,7 @@ class VideoDownloaderApp(QMainWindow):
             self.logout_btn.setVisible(True)
         else:
             self.login_status_label.setText("로그아웃 상태")
-            self.login_btn.setText("YouTube 로그인")
+            self.login_btn.setText("사이트 로그인")
             self.logout_btn.setVisible(False)
             self.cleanup_temp_files()
 
@@ -313,8 +334,8 @@ class VideoDownloaderApp(QMainWindow):
         """입력된 URL에 대한 정보 추출 및 다운로드 작업 시작."""
         video_url = self.url_input.text()
         if not video_url:
-            logging.warning("추출 시작 실패: YouTube 비디오 URL을 입력하세요.")
-            QMessageBox.warning(self, "URL 필요", "YouTube 비디오 URL을 입력해주세요.")
+            logging.warning("추출 시작 실패: 비디오 URL을 입력하세요.")
+            QMessageBox.warning(self, "URL 필요", "비디오 URL을 입력해주세요.")
             return
         if not self.save_path:
             logging.warning("추출 시작 실패: 저장 디렉토리를 선택하세요.")
@@ -374,14 +395,13 @@ class VideoDownloaderApp(QMainWindow):
             self.auth_window.raise_()
             return
         try:
-            logging.info("YouTubeAuthWindow 인스턴스 생성 시도...")
-            # YouTubeAuthWindow 생성 시 config_manager 전달 확인
+            logging.info("AuthWindow 인스턴스 생성 시도...")
             self.auth_window = YouTubeAuthWindow(config_manager=self.config_manager)
             self.auth_window.login_completed.connect(self.handle_login_completed)
-            logging.info("YouTubeAuthWindow 생성 및 시그널 연결 완료.")
+            logging.info("AuthWindow 생성 및 시그널 연결 완료.")
             self.auth_window.show()
         except Exception as e:
-            logging.exception("YouTubeAuthWindow 생성 중 오류")
+            logging.exception("AuthWindow 생성 중 오류")
             QMessageBox.critical(
                 self,
                 "로그인 오류",
@@ -444,7 +464,7 @@ class VideoDownloaderApp(QMainWindow):
                     item.setForeground(Qt.yellow)
 
     @Slot(str, str)
-    def add_task_to_list(self, task_id, initial_status_text):
+    def add_task_to_list(self, task_id: str, initial_status_text: str):
         """Task Manager로부터 받은 새 작업 정보를 목록에 추가하거나 상태 업데이트."""
         items = self.task_list_widget.findItems(
             task_id, Qt.MatchExactly | Qt.MatchCaseSensitive
@@ -458,17 +478,42 @@ class VideoDownloaderApp(QMainWindow):
             items[0].setText(initial_status_text)
             logging.info(f"Task status updated in list: {task_id}")
 
+    def open_save_folder(self):
+        """선택된 저장 폴더를 파일 탐색기로 엽니다."""
+        if not hasattr(self, "save_path") or not self.save_path:
+            logging.warning("저장 폴더 열기 실패: 경로가 설정되지 않았습니다.")
+            QMessageBox.warning(self, "경로 없음", "저장 폴더가 선택되지 않았습니다.")
+            return
+        if not os.path.isdir(self.save_path):
+            logging.warning(f"저장 폴더 열기 실패: 경로가 유효하지 않거나 폴더가 아닙니다: {self.save_path}")
+            QMessageBox.warning(self, "잘못된 경로", f"지정된 저장 폴더를 찾을 수 없습니다: {self.save_path}")
+            return
 
-if __name__ == "__main__":
-    setup_logging()
-    app = QApplication(sys.argv)
-    try:
-        window = VideoDownloaderApp()
-        window.show()
-        sys.exit(app.exec())
-    except SystemExit:
-        pass
-    except Exception as e:
-        logging.critical(f"Application initialization failed: {e}", exc_info=True)
-        print(f"CRITICAL ERROR: Application failed to initialize - {e}")
-        sys.exit(1)
+        logging.info(f"저장 폴더 열기 요청: {self.save_path}")
+        try:
+            if os.name == "nt": # Windows
+                os.startfile(self.save_path)
+            elif os.name == "posix": # macOS, Linux
+                if sys.platform == "darwin": # macOS
+                    subprocess.run(["open", self.save_path])
+                else: # Linux
+                    subprocess.run(["xdg-open", self.save_path])
+            logging.info(f"저장 폴더 열기 시도 성공: {self.save_path}")
+        except Exception as e:
+            logging.exception(f"저장 폴더({self.save_path}) 열기 오류")
+            QMessageBox.warning(
+                self, "폴더 열기 오류", f"저장 폴더를 여는 중 오류가 발생했습니다: {e}"
+            )
+
+    def open_github_link(self):
+        """GitHub 저장소 링크를 기본 웹 브라우저에서 엽니다."""
+        url = "https://github.com/CharlieYang0040/lhcVideoDownloader"
+        logging.info(f"GitHub 링크 열기 요청: {url}")
+        try:
+            webbrowser.open(url)
+            logging.info("GitHub 링크 열기 시도 성공.")
+        except Exception as e:
+            logging.exception(f"GitHub 링크({url}) 열기 오류")
+            QMessageBox.warning(
+                self, "링크 열기 오류", f"웹 브라우저를 여는 중 오류가 발생했습니다: {e}"
+            )
