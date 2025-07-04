@@ -1,1 +1,1 @@
-pyinstaller --onefile --console --add-binary "libs/ffmpeg/bin/ffmpeg.exe;libs/ffmpeg/bin" --add-data "resources/icon.png;." --add-data "resources/icon.ico;." --icon=".resources/icon.ico" main.py
+pyinstaller .\videoDownloaderApp.spec
