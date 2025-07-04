@@ -19,7 +19,7 @@ class ConfigManagerError(Exception):
 # --- 기본 ydl 옵션 --- (변경 가능)
 DEFAULT_YDL_OPTIONS = {
     "format": "bv*[ext=mp4]+ba*[ext=m4a]/b*[ext=mp4]/bestvideo+bestaudio/best",
-    "merge_output_format": "mp4",
+    "merge_output_format": "mkv",
     "writethumbnail": True,
     "concurrent_fragment_downloads": 8,
     "verbose": False,  # 일반 로그는 표준 로깅 사용
@@ -28,21 +28,31 @@ DEFAULT_YDL_OPTIONS = {
     "ignoreerrors": False,
     "no_mtime": True,
     "force_overwrites": True,
-    # 후처리기 설정 (필요 시 상세 설정 추가)
     "postprocessors": [
         {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"},
         {"key": "FFmpegMetadata", "add_metadata": True},
         # EmbedThumbnail은 writethumbnail=True 시 자동 추가됨
     ],
-    # FFmpeg 로그 레벨 등 (선택적)
     "postprocessor_args": {
-        "ffmpeg": ["-loglevel", "info"]  # info, warning, error, quiet 등
-        # "default": [...] # 인코딩 옵션 (필요 시)
+        "ffmpeg": ["-loglevel", "info"],
+        "FFmpegVideoConvertor": [
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-colorspace", "bt709",
+            "-color_primaries", "bt709",
+            "-color_trc", "bt709",
+            "-color_range", "limited",
+            "-max_muxing_queue_size", "4096",
+            "-thread_queue_size", "4096",
+            "-threads", "16"
+        ]
     },
     # 'external_downloader': None, # 예: 'aria2c'
     # 'external_downloader_args': None,
 }
 
+# 설정 파일 버전 (이 구조가 변경될 때마다 숫자를 올립니다)
+SETTINGS_VERSION = 1
 
 class ConfigManager:
     """애플리케이션 설정, 쿠키, 암호화 키, yt-dlp 옵션을 관리하는 클래스."""
@@ -115,14 +125,39 @@ class ConfigManager:
                 f"암호화 시스템 초기화 중 예상치 못한 오류: {e}. 암호화 기능이 비활성화됩니다."
             )
 
-        # 설정 파일 로드 (ydl_opts 포함)
+        # 설정 파일 로드 및 버전 관리
         self._settings = self.load_all_settings()
-        # ydl_options 초기화 (파일에 없으면 기본값 사용 및 저장)
-        if "ydl_options" not in self._settings:
-            log.info("yt-dlp 기본 옵션을 설정 파일에 저장합니다.")
-            self.save_setting("ydl_options", DEFAULT_YDL_OPTIONS)
-            # _settings 갱신 (save_setting 내부에서 load_all_settings 호출하므로 필요 없을 수 있음)
-            # self._settings = self.load_all_settings()
+        self._check_and_update_settings()
+
+    def _check_and_update_settings(self):
+        """설정 파일의 버전을 확인하고 필요한 경우 업데이트합니다."""
+        current_version = self._settings.get("settings_version")
+        
+        if current_version != SETTINGS_VERSION:
+            log.info(f"설정 파일 버전이 다르거나(현재: {current_version}, 최신: {SETTINGS_VERSION}) 없습니다. 업데이트를 시작합니다.")
+            
+            # 이전 설정에서 유지할 값들을 백업합니다.
+            save_path = self._settings.get("save_path")
+            
+            # 기본 설정으로 초기화 (ydl_options 포함)
+            new_settings = {"ydl_options": DEFAULT_YDL_OPTIONS.copy()}
+
+            # 백업한 값을 새 설정에 복원합니다.
+            if save_path:
+                new_settings["save_path"] = save_path
+                
+            # 버전 정보를 추가하고 전체 설정을 저장합니다.
+            new_settings["settings_version"] = SETTINGS_VERSION
+            self.save_all_settings(new_settings)
+            
+            # 현재 인스턴스의 _settings도 갱신합니다.
+            self._settings = new_settings
+            log.info("설정 파일 업데이트 완료.")
+        else:
+            # 버전이 동일할 때, ydl_options가 없는 경우에만 기본값 추가 (최초 실행)
+            if "ydl_options" not in self._settings:
+                log.info("yt-dlp 기본 옵션을 설정 파일에 저장합니다.")
+                self.save_setting("ydl_options", DEFAULT_YDL_OPTIONS)
 
     def _determine_ffmpeg_path(self):
         """FFmpeg 실행 파일 경로를 결정합니다.
@@ -400,3 +435,18 @@ class ConfigManager:
         # 여기서는 받은 옵션으로 덮어쓰기
         log.info("yt-dlp 옵션을 설정 파일에 저장합니다.")
         return self.save_setting("ydl_options", options)
+
+    def save_all_settings(self, settings_dict):
+        """전체 설정 객체를 JSON 파일에 저장합니다.
+
+        Args:
+            settings_dict (dict): 저장할 전체 설정 딕셔너리.
+        """
+        path = self.get_settings_file_path()
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(settings_dict, f, indent=4, ensure_ascii=False)
+            log.debug(f"전체 설정 저장 완료: {path}")
+        except (IOError, OSError) as e:
+            log.error(f"설정 파일 쓰기 오류: {e}")
+            raise ConfigManagerError(f"Failed to write settings file: {e}") from e

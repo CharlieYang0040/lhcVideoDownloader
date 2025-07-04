@@ -103,8 +103,9 @@ class TaskManager(QObject):
             log.warning(f"Attempted to update status for non-existent task: {task_id}")
             return False
 
-    @Slot(str, str, str)
-    def start_new_task(self, url, save_path, cookie_file):
+    def add_download_task(
+        self, url: str, output_path: str, cookie_file: str | None, start_time: str | None, end_time: str | None, debug_mode: bool = False
+    ):
         """새로운 추출 및 다운로드 작업을 시작합니다.
 
         임시 ID로 ExtractWorker를 시작하고, 추출 성공 시
@@ -112,18 +113,24 @@ class TaskManager(QObject):
 
         Args:
             url (str): 다운로드할 YouTube 비디오 URL.
-            save_path (str): 파일을 저장할 디렉토리 경로.
+            output_path (str): 파일을 저장할 디렉토리 경로.
             cookie_file (str | None): 사용할 쿠키 파일 경로 (로그인 필요 시).
+            start_time (str | None): 다운로드 시작 시간 (예: "HH:MM:SS").
+            end_time (str | None): 다운로드 종료 시간 (예: "HH:MM:SS").
+            debug_mode (bool): 디버그 로그 활성화 여부.
         """
         temp_task_id = f"Extracting_{uuid.uuid4().hex[:8]}"
         log.info(f"[{temp_task_id}] New task received for URL: {url}")
 
         self.task_info[temp_task_id] = {
             "url": url,
-            "save_path": save_path,
+            "save_path": output_path,
             "cookie_file": cookie_file,
-            "status": TaskStatus.EXTRACTING,  # Enum 사용
+            "status": TaskStatus.EXTRACTING,
             "output_file": None,
+            "start_time": start_time,
+            "end_time": end_time,
+            "debug_mode": debug_mode, # 디버그 모드 저장
         }
 
         # UI에 작업 추가 알림
@@ -226,6 +233,9 @@ class TaskManager(QObject):
                 self.ffmpeg_path,
                 task_data["cookie_file"],
                 base_download_opts,  # 기본 옵션 전달
+                start_time=task_data["start_time"], # 시작 시간 전달
+                end_time=task_data["end_time"],     # 종료 시간 전달
+                debug_mode=task_data["debug_mode"], # 디버그 모드 전달
             )
             downloader.signals.progress.connect(self._handle_progress)
             downloader.signals.finished.connect(self._handle_worker_finished)
@@ -304,16 +314,20 @@ class TaskManager(QObject):
                 emit_success = True
                 # --- 수정 시간 업데이트 로직 --- (성공 시)
                 output_file = self.task_info[task_id].get("output_file")
+                log.debug(f"[{task_id}] Checking for file to update mtime. Path: {output_file}")
                 if output_file and os.path.exists(output_file):
                     try:
+                        # 현재 시간으로 파일 수정 시간을 업데이트
                         os.utime(output_file, None)
                         log.info(
-                            f"[{task_id}] Updated modification time for {output_file}"
+                            f"[{task_id}] Successfully updated modification time for {output_file}"
                         )
                     except Exception as e:
                         log.error(
                             f"[{task_id}] Failed to update modification time for {output_file}: {e}"
                         )
+                else:
+                    log.warning(f"[{task_id}] Could not update mtime. File not found at path: {output_file}")
                 # --- 수정 시간 업데이트 로직 끝 ---
             else:
                 # 실패 또는 취소

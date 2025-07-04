@@ -20,6 +20,8 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QDialog,
     QMenu,
+    QGroupBox,
+    QCheckBox,
 )
 from PySide6.QtCore import Signal, Slot, QThread, Qt, QObject
 import yt_dlp
@@ -128,6 +130,20 @@ class VideoDownloaderApp(QMainWindow):
         self.url_input.setPlaceholderText("다운로드할 동영상 URL을 입력하세요 (예: YouTube, Vimeo, Instagram, CHZZK 등)")
         self.paste_btn = QPushButton("붙여넣기")
 
+        # 시간 지정 다운로드 영역
+        self.time_range_groupbox = QGroupBox("시간 지정 다운로드")
+        self.time_range_checkbox = QCheckBox("활성화")
+        self.start_time_label = QLabel("시작 시간:")
+        self.start_time_input = QLineEdit()
+        self.start_time_input.setPlaceholderText("HH:MM:SS 또는 MM:SS")
+        self.end_time_label = QLabel("종료 시간:")
+        self.end_time_input = QLineEdit()
+        self.end_time_input.setPlaceholderText("HH:MM:SS 또는 MM:SS")
+
+        # 초기 상태 비활성화
+        self.time_range_groupbox.setCheckable(True)
+        self.time_range_groupbox.setChecked(False)
+
         # 다운로드 버튼
         self.download_btn = QPushButton("Extract and Download")
 
@@ -146,6 +162,7 @@ class VideoDownloaderApp(QMainWindow):
         self.open_config_btn = QPushButton("설정 폴더 열기")
         self.open_save_folder_btn = QPushButton("Open Save Folder")
         self.github_link_btn = QPushButton("GitHub")
+        self.debug_log_checkbox = QCheckBox("디버그 로그 활성화")
 
         # 저장 경로 영역
         self.save_label = QLabel("Save Directory:")
@@ -188,6 +205,7 @@ class VideoDownloaderApp(QMainWindow):
         self.settings_layout.addWidget(self.login_btn)
         self.settings_layout.addWidget(self.logout_btn)
         self.settings_layout.addWidget(self.open_config_btn)
+        self.settings_layout.addWidget(self.debug_log_checkbox)
 
         # 메인 수직 레이아웃
         self.layout = QVBoxLayout()
@@ -198,6 +216,16 @@ class VideoDownloaderApp(QMainWindow):
         self.layout.addWidget(self.save_path_btn)
         self.layout.addWidget(self.open_save_folder_btn)
         self.layout.addWidget(self.save_path_display)
+        
+        # 시간 지정 그룹박스 레이아웃 설정
+        time_range_layout = QHBoxLayout()
+        time_range_layout.addWidget(self.start_time_label)
+        time_range_layout.addWidget(self.start_time_input)
+        time_range_layout.addWidget(self.end_time_label)
+        time_range_layout.addWidget(self.end_time_input)
+        self.time_range_groupbox.setLayout(time_range_layout)
+        self.layout.addWidget(self.time_range_groupbox)
+
         self.layout.addWidget(self.download_btn)
         self.layout.addWidget(self.task_list_label)
         self.layout.addWidget(self.task_list_widget)
@@ -219,6 +247,10 @@ class VideoDownloaderApp(QMainWindow):
         self.save_path_btn.clicked.connect(self.choose_save_path)
         self.open_save_folder_btn.clicked.connect(self.open_save_folder)
         self.github_link_btn.clicked.connect(self.open_github_link)
+
+        # 시간 지정 체크박스
+        self.time_range_groupbox.toggled.connect(self.toggle_time_range_inputs)
+        self.toggle_time_range_inputs(False) # 초기 상태 설정
 
         # Task Manager 시그널
         self.task_manager.task_progress.connect(self.update_task_progress)
@@ -329,28 +361,50 @@ class VideoDownloaderApp(QMainWindow):
             self.save_path = folder
             self.save_path_display.setText(folder)
 
+    @Slot(bool)
+    def toggle_time_range_inputs(self, checked):
+        """시간 범위 입력 필드의 활성화 상태를 토글합니다."""
+        self.start_time_input.setEnabled(checked)
+        self.end_time_input.setEnabled(checked)
+
     @Slot()
     def start_extraction(self):
-        """입력된 URL에 대한 정보 추출 및 다운로드 작업 시작."""
-        video_url = self.url_input.text()
-        if not video_url:
-            logging.warning("추출 시작 실패: 비디오 URL을 입력하세요.")
-            QMessageBox.warning(self, "URL 필요", "비디오 URL을 입력해주세요.")
+        """URL 추출 및 다운로드 시작 요청."""
+        url = self.url_input.text().strip()
+        if not url:
+            QMessageBox.warning(self, "입력 오류", "URL을 입력해주세요.")
             return
-        if not self.save_path:
-            logging.warning("추출 시작 실패: 저장 디렉토리를 선택하세요.")
-            QMessageBox.warning(
-                self, "저장 폴더 필요", "다운로드할 폴더를 선택해주세요."
-            )
-            return
-        logging.info(f"Requesting extraction for URL: {video_url}")
-        self.task_manager.start_new_task(
-            video_url, self.save_path, self.temp_cookie_file_path
+
+        # 쿠키 준비
+        cookie_file = self.load_and_prepare_cookies()
+        
+        # 시간 지정 값 가져오기
+        start_time = None
+        end_time = None
+        if self.time_range_groupbox.isChecked():
+            start_time = self.start_time_input.text().strip() or None
+            end_time = self.end_time_input.text().strip() or None
+            # 간단한 유효성 검사 (예: 둘 다 없으면 무시)
+            if not start_time and not end_time:
+                logging.info("시간 지정이 활성화되었지만, 시작 또는 종료 시간이 입력되지 않았습니다.")
+
+        # 디버그 모드 확인
+        is_debug = self.debug_log_checkbox.isChecked()
+
+        # Task Manager에 다운로드 작업 추가
+        self.task_manager.add_download_task(
+            url=url,
+            output_path=self.save_path,
+            cookie_file=cookie_file,
+            start_time=start_time,
+            end_time=end_time,
+            debug_mode=is_debug
         )
+        self.url_input.clear()
 
     @Slot(str, int, int)
     def update_task_progress(self, task_id, value, max_value):
-        """Task Manager로부터 받은 진행률 정보로 목록 아이템 업데이트."""
+        """작업 진행률 UI 업데이트."""
         for i in range(self.task_list_widget.count()):
             item = self.task_list_widget.item(i)
             if item.data(Qt.UserRole) == task_id:

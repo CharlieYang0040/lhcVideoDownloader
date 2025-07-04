@@ -3,6 +3,7 @@ import os
 from PySide6.QtCore import Signal, QThread, QMutex, QWaitCondition, QObject
 import yt_dlp
 import time
+import subprocess
 
 # 모듈 레벨 로거 설정
 log = logging.getLogger(__name__)
@@ -197,7 +198,17 @@ class DownloadWorker(BaseWorker):
     """비디오를 다운로드하고 후처리하는 워커."""
     # 생성자에 base_opts 추가
     def __init__(
-        self, task_id, url, output_file, ffmpeg_path, cookie_file=None, base_opts=None, parent=None
+        self,
+        task_id,
+        url,
+        output_file,
+        ffmpeg_path,
+        cookie_file=None,
+        base_opts=None,
+        start_time=None,
+        end_time=None,
+        debug_mode=False,
+        parent=None,
     ):
         """DownloadWorker 초기화.
 
@@ -208,6 +219,9 @@ class DownloadWorker(BaseWorker):
             ffmpeg_path (str): FFmpeg 실행 파일 경로.
             cookie_file (str | None, optional): 사용할 쿠키 파일 경로.
             base_opts (dict | None, optional): yt-dlp 기본 옵션.
+            start_time (str | None, optional): 다운로드 시작 시간.
+            end_time (str | None, optional): 다운로드 종료 시간.
+            debug_mode (bool, optional): 디버그 로그 활성화 여부.
             parent (QObject, optional): 부모 객체. Defaults to None.
         """
         super().__init__(task_id, parent)
@@ -215,6 +229,9 @@ class DownloadWorker(BaseWorker):
         self.output_file = output_file
         self.ffmpeg_path = ffmpeg_path
         self.cookie_file = cookie_file
+        self.start_time = start_time
+        self.end_time = end_time
+        self.debug_mode = debug_mode
         # 기본 옵션 저장 (없으면 빈 dict)
         self.base_opts = base_opts if base_opts is not None else {}
         self.ydl = None
@@ -239,89 +256,227 @@ class DownloadWorker(BaseWorker):
             log.info(
                 f"[{self.task_id}] Download/processing finished according to hook."
             )
-            self.signals.progress.emit(self.task_id, 100, 100)
+            # 수동 FFmpeg 처리가 있으므로 여기서 100%를 보내지 않음
+            # self.signals.progress.emit(self.task_id, 100, 100)
         elif status == "error":
             log.error(f"[{self.task_id}] Download hook reported an error.")
 
     def run(self):
-        """yt-dlp를 사용하여 비디오 다운로드 및 후처리 실행."""
+        """
+        비디오 다운로드 및 수동 후처리를 실행합니다.
+        1. yt-dlp를 사용하여 비디오를 임시 mkv 파일로 다운로드합니다.
+        2. subprocess를 사용하여 ffmpeg를 직접 실행하여 자르기, 변환을 수행합니다.
+        """
         log.info(f"[{self.task_id}] Starting download for URL: {self.url}")
         self.ydl = None
+        
+        output_dir, output_filename = os.path.split(self.output_file)
+        output_basename, _ = os.path.splitext(output_filename)
+        temp_output_template = os.path.join(output_dir, f"{output_basename}.temp")
+        temp_mkv_path = f"{temp_output_template}.mkv"
+        
         try:
+            # --- 1단계: yt-dlp로 임시 파일 다운로드 ---
             if not self.ffmpeg_path:
-                # ffmpeg_path는 TaskManager에서 이미 확인했어야 함
                 log.error(f"[{self.task_id}] FFmpeg path is not set.")
                 self.signals.finished.emit(self.task_id, False)
                 return
 
             log.info(f"[{self.task_id}] Using FFmpeg from: {self.ffmpeg_path}")
-            log.info(f"[{self.task_id}] Output file: {self.output_file}")
-            log.info(
-                f"[{self.task_id}] Starting download, conversion, and thumbnail embedding..."
-            )
+            log.info(f"[{self.task_id}] Final output file: {self.output_file}")
+            log.info(f"[{self.task_id}] Starting download to temporary file...")
 
-            # 기본 옵션 복사 후 작업별 옵션 추가/수정
             ydl_opts = self.base_opts.copy()
-
-            # 작업별 필수 옵션 설정
-            ydl_opts["outtmpl"] = self.output_file
             ydl_opts["progress_hooks"] = [self.progress_hook]
-            ydl_opts["ffmpeg_location"] = self.ffmpeg_path
+            
+            # yt-dlp가 내부적으로 다른 후처리(mp4 변환 등)를 하지 않도록 설정합니다.
+            # 'postprocessors' 키를 완전히 삭제하여 yt-dlp가 포맷에 맞춰
+            # 병합(merge)만 수행하도록 유도합니다.
+            if "postprocessors" in ydl_opts:
+                del ydl_opts["postprocessors"]
 
+            ydl_opts["merge_output_format"] = "mkv"
+            ydl_opts["outtmpl"] = temp_output_template
+
+            if self.ffmpeg_path:
+                # ffmpeg_location은 파일이 아닌 디렉토리로 지정해야 ffprobe 등 다른 도구도 찾을 수 있습니다.
+                ffmpeg_dir = os.path.dirname(self.ffmpeg_path)
+                ydl_opts["ffmpeg_location"] = ffmpeg_dir
+                
             if self.cookie_file:
                 ydl_opts["cookiefile"] = self.cookie_file
-                log.info(f"[{self.task_id}] Using cookie file: {self.cookie_file}")
 
-            # download=True 는 기본값이거나 명시적으로 설정 (base_opts 에 있을 수 있음)
-            # ydl_opts['download'] = True
+            if self.debug_mode:
+                log.info(f"[{self.task_id}] Debug mode enabled for yt-dlp.")
+                ydl_opts["verbose"] = True
+                ydl_opts["logger"] = logging.getLogger(f"yt-dlp.{self.task_id}")
 
-            # yt-dlp 인스턴스 생성
             self.ydl = yt_dlp.YoutubeDL(ydl_opts)
 
             if self.is_cancelled():
-                log.info(
-                    f"[{self.task_id}] Download cancelled before starting download."
-                )
+                log.info(f"[{self.task_id}] Download cancelled before starting.")
                 self.signals.finished.emit(self.task_id, False)
                 return
 
             self.ydl.download([self.url])
 
             if self.is_cancelled():
-                log.info(
-                    f"[{self.task_id}] Download likely cancelled during operation (checked after ydl.download call)."
-                )
+                raise yt_dlp.utils.DownloadCancelled("Download cancelled by user.")
+
+            if not os.path.exists(temp_mkv_path):
+                log.error(f"[{self.task_id}] Temporary MKV file not found: {temp_mkv_path}")
                 self.signals.finished.emit(self.task_id, False)
                 return
+            
+            log.info(f"[{self.task_id}] Temporary file downloaded: {temp_mkv_path}")
+            
+            # --- 썸네일 파일 처리 (이름 변경 및 .webp -> .png 변환) ---
+            final_basename, _ = os.path.splitext(self.output_file)
+            
+            # 1. 임시 썸네일 파일 찾기
+            temp_thumbnail_path = None
+            original_ext = None
+            for ext in ['webp', 'jpg', 'png']:
+                path = f"{temp_output_template}.{ext}"
+                if os.path.exists(path):
+                    temp_thumbnail_path = path
+                    original_ext = ext
+                    log.info(f"[{self.task_id}] Found temporary thumbnail: {temp_thumbnail_path}")
+                    break
+            
+            if temp_thumbnail_path:
+                # 2. webp 포맷인 경우 png로 변환
+                if original_ext == 'webp':
+                    final_thumbnail_path = f"{final_basename}.png"
+                    log.info(f"[{self.task_id}] Converting thumbnail from WEBP to PNG: {final_thumbnail_path}")
+                    
+                    ffmpeg_conv_cmd = [self.ffmpeg_path, "-y", "-i", temp_thumbnail_path, final_thumbnail_path]
 
-            log.info(f"[{self.task_id}] Download process finished successfully!")
+                    try:
+                        # subprocess.communicate()를 사용하여 데드락을 방지합니다.
+                        process = subprocess.Popen(
+                            ffmpeg_conv_cmd,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            universal_newlines=True,
+                            encoding='utf-8',
+                            errors='replace',
+                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                        )
+                        stdout, _ = process.communicate()
+
+                        if self.debug_mode and stdout:
+                            for line in stdout.splitlines():
+                                log.debug(f"[ffmpeg-thumb-{self.task_id}] {line.strip()}")
+
+                        if process.returncode == 0:
+                            log.info(f"[{self.task_id}] Successfully converted thumbnail to PNG.")
+                            os.remove(temp_thumbnail_path) # 성공 시 원본 임시 파일 삭제
+                        else:
+                            log.error(f"[{self.task_id}] FFmpeg thumbnail conversion failed with code {process.returncode}.")
+                            if stdout:
+                                log.error(f"[{self.task_id}] FFmpeg thumb output: {stdout}")
+                            # 변환 실패 시 원본 이름으로 되돌림
+                            fallback_path = f"{final_basename}.{original_ext}"
+                            if os.path.exists(fallback_path): os.remove(fallback_path)
+                            os.rename(temp_thumbnail_path, fallback_path)
+
+                    except Exception as e:
+                        log.error(f"[{self.task_id}] Error during thumbnail conversion: {e}. Falling back to renaming.")
+                        fallback_path = f"{final_basename}.{original_ext}"
+                        if os.path.exists(fallback_path): os.remove(fallback_path)
+                        os.rename(temp_thumbnail_path, fallback_path)
+
+                else: # .jpg, .png 등 다른 포맷은 이름만 변경
+                    final_thumbnail_path = f"{final_basename}.{original_ext}"
+                    try:
+                        if os.path.exists(final_thumbnail_path):
+                            os.remove(final_thumbnail_path)
+                        os.rename(temp_thumbnail_path, final_thumbnail_path)
+                        log.info(f"[{self.task_id}] Renamed thumbnail to: {final_thumbnail_path}")
+                    except OSError as e:
+                        log.warning(f"[{self.task_id}] Failed to rename thumbnail: {e}")
+
+            # --- 2단계: FFmpeg 수동 실행 (자르기 및 변환) ---
+            log.info(f"[{self.task_id}] Starting manual FFmpeg processing.")
+            self.signals.progress.emit(self.task_id, 0, 0) # 처리 중 상태로 변경
+
+            ffmpeg_cmd = [self.ffmpeg_path, "-y", "-i", temp_mkv_path]
+
+            if self.start_time:
+                ffmpeg_cmd.extend(["-ss", self.start_time])
+            if self.end_time:
+                ffmpeg_cmd.extend(["-to", self.end_time])
+
+            # 설정에서 고품질 인코딩 옵션 가져오기
+            pp_args = self.base_opts.get("postprocessor_args", {})
+            convertor_args = pp_args.get("FFmpegVideoConvertor", [])
+            if convertor_args:
+                ffmpeg_cmd.extend(convertor_args)
+            else:
+                # 기본값 설정
+                ffmpeg_cmd.extend(['-c:v', 'libx264', '-c:a', 'aac', '-pix_fmt', 'yuv420p'])
+            
+            if self.debug_mode:
+                log.info(f"[{self.task_id}] Debug mode enabled for FFmpeg.")
+                ffmpeg_cmd.extend(["-loglevel", "debug"])
+
+            ffmpeg_cmd.append(self.output_file)
+
+            log.info(f"[{self.task_id}] Executing FFmpeg command: {' '.join(ffmpeg_cmd)}")
+
+            # subprocess.communicate()를 사용하여 데드락을 방지합니다.
+            process = subprocess.Popen(
+                ffmpeg_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                encoding='utf-8',
+                errors='replace',
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            )
+            
+            stdout, _ = process.communicate()
+
+            if self.debug_mode and stdout:
+                for line in stdout.splitlines():
+                    log.info(f"[ffmpeg-{self.task_id}] {line.strip()}")
+            
+            if self.is_cancelled():
+                 raise yt_dlp.utils.DownloadCancelled("Download cancelled by user.")
+
+            if process.returncode != 0:
+                log.error(f"[{self.task_id}] FFmpeg processing failed with code {process.returncode}.")
+                if stdout:
+                    log.error(f"[{self.task_id}] FFmpeg output:\n{stdout}")
+                self.signals.finished.emit(self.task_id, False)
+                return
+            
+            log.info(f"[{self.task_id}] FFmpeg processing successful.")
+            self.signals.progress.emit(self.task_id, 100, 100)
             self.signals.finished.emit(self.task_id, True)
 
         except yt_dlp.utils.DownloadCancelled as cancel_err:
             log.warning(f"[{self.task_id}] Download explicitly cancelled: {cancel_err}")
             self.signals.finished.emit(self.task_id, False)
-        except yt_dlp.utils.YoutubeDLError as ydl_err:
-            if self.is_cancelled():
-                log.warning(
-                    f"[{self.task_id}] Download likely cancelled, yt-dlp error occurred: {ydl_err}"
-                )
-                self.signals.finished.emit(self.task_id, False)
-            else:
-                log.error(
-                    f"[{self.task_id}] Download failed due to yt-dlp error: {ydl_err}"
-                )
-                self.signals.finished.emit(self.task_id, False)
         except Exception as e:
             if self.is_cancelled():
                 log.warning(
-                    f"[{self.task_id}] Download likely cancelled, general exception occurred: {e}"
+                    f"[{self.task_id}] Download cancelled, general exception occurred: {e}"
                 )
-                self.signals.finished.emit(self.task_id, False)
             else:
                 log.exception(
                     f"[{self.task_id}] An unexpected error occurred during download"
                 )
-                self.signals.finished.emit(self.task_id, False)
+            self.signals.finished.emit(self.task_id, False)
         finally:
+            # --- 3단계: 임시 파일 정리 ---
+            if os.path.exists(temp_mkv_path):
+                try:
+                    os.remove(temp_mkv_path)
+                    log.info(f"[{self.task_id}] Removed temporary file: {temp_mkv_path}")
+                except OSError as e:
+                    log.warning(f"[{self.task_id}] Failed to remove temp file {temp_mkv_path}: {e}")
+            
             self.ydl = None
             log.debug(f"[{self.task_id}] Download worker finished execution.")

@@ -13,21 +13,23 @@ BACKUP_COUNT = 3
 def setup_logging(log_level=logging.DEBUG):
     """애플리케이션 로깅 시스템을 설정합니다."""
 
-    # 애플리케이션 디렉토리 결정
-    if getattr(sys, "frozen", False):
-        # PyInstaller 등으로 빌드된 경우
-        app_dir = os.path.dirname(sys.executable)
-    else:
-        # 일반 실행의 경우 (main 스크립트 기준)
-        # 이 함수가 호출되는 위치에 따라 경로 조정이 필요할 수 있음
-        # videoDownloaderApp.py 에서 호출될 것을 가정
-        app_dir = os.path.dirname(
-            os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-        )
-        # 만약 main 스크립트와 같은 디렉토리에 있다면 아래 사용
-        # app_dir = os.path.dirname(os.path.abspath(__file__))
+    # main.py 가 있는 프로젝트 루트 디렉토리를 기준으로 경로 설정
+    # __main__ 모듈의 파일 경로를 사용하여 프로젝트 루트를 찾음
+    try:
+        if getattr(sys, "frozen", False):
+            # PyInstaller 등으로 빌드된 경우, 실행 파일이 있는 디렉토리
+            project_root = os.path.dirname(sys.executable)
+        else:
+            # 일반 실행의 경우, main.py의 디렉토리
+            # sys.modules['__main__'] 은 엔트리포인트 스크립트를 가리킴
+            main_py_path = sys.modules['__main__'].__file__
+            project_root = os.path.dirname(os.path.abspath(main_py_path))
+    except (KeyError, AttributeError):
+        # 안전 장치: __main__ 모듈을 찾을 수 없을 경우 CWD 기준
+        project_root = os.getcwd()
 
-    log_dir = os.path.join(app_dir, LOG_DIR_NAME)
+
+    log_dir = os.path.join(project_root, LOG_DIR_NAME)
     try:
         os.makedirs(log_dir, exist_ok=True)
     except OSError as e:
@@ -81,7 +83,7 @@ def setup_logging(log_level=logging.DEBUG):
             print(f"Error setting up console handler: {e}")
 
     logging.info("--- Logging System Initialized ---")
-    logging.info(f"Application directory: {app_dir}")
+    logging.info(f"Application directory: {project_root}")
     logging.info(f"Log file path: {log_file}")
     # 초기화 완료 후 테스트 로그
     logging.debug("Debug level log test.")
