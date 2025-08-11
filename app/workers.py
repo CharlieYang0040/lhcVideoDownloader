@@ -82,7 +82,7 @@ class ExtractWorker(BaseWorker):
         log.info(f"[{self.task_id}] Starting extraction for URL: {self.url}")
         try:
             log.info(
-                f"[{self.task_id}] Attempting to connect to YouTube URL: {self.url}"
+                f"[{self.task_id}] Attempting to connect to URL: {self.url}"
             )
 
             # 기본 옵션 복사 후 작업별 옵션 추가
@@ -235,6 +235,8 @@ class DownloadWorker(BaseWorker):
         # 기본 옵션 저장 (없으면 빈 dict)
         self.base_opts = base_opts if base_opts is not None else {}
         self.ydl = None
+        # yt-dlp 진행 중 보고되는 실제 미디어 파일 경로 (hook로 수집)
+        self._downloaded_media_path: str | None = None
 
     def progress_hook(self, d):
         """yt-dlp 진행률 콜백 함수. 진행률 시그널 전송 및 취소 확인."""
@@ -243,6 +245,10 @@ class DownloadWorker(BaseWorker):
             raise yt_dlp.utils.DownloadCancelled("Download cancelled by user.")
 
         status = d.get("status")
+        # 실제 파일 경로 보관: filename(최종) 또는 tmpfilename(임시)
+        candidate_path = d.get("filename") or d.get("tmpfilename")
+        if candidate_path:
+            self._downloaded_media_path = candidate_path
         if status == "downloading":
             downloaded = d.get("downloaded_bytes", 0)
             total = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
@@ -273,7 +279,9 @@ class DownloadWorker(BaseWorker):
         output_dir, output_filename = os.path.split(self.output_file)
         output_basename, _ = os.path.splitext(output_filename)
         temp_output_template = os.path.join(output_dir, f"{output_basename}.temp")
-        temp_mkv_path = f"{temp_output_template}.mkv"
+        # yt-dlp가 생성하는 실제 파일 확장자는 사이트/포맷에 따라 다름
+        # 진행 훅에서 보고되는 경로를 우선 사용
+        temp_downloaded_path = None
         
         try:
             # --- 1단계: yt-dlp로 임시 파일 다운로드 ---
@@ -296,7 +304,8 @@ class DownloadWorker(BaseWorker):
                 del ydl_opts["postprocessors"]
 
             ydl_opts["merge_output_format"] = "mkv"
-            ydl_opts["outtmpl"] = temp_output_template
+            # 확장자를 포함하여 실제 파일이 항상 확장자를 갖도록 지정
+            ydl_opts["outtmpl"] = f"{temp_output_template}.%(ext)s"
 
             if self.ffmpeg_path:
                 # ffmpeg_location은 파일이 아닌 디렉토리로 지정해야 ffprobe 등 다른 도구도 찾을 수 있습니다.
@@ -323,12 +332,40 @@ class DownloadWorker(BaseWorker):
             if self.is_cancelled():
                 raise yt_dlp.utils.DownloadCancelled("Download cancelled by user.")
 
-            if not os.path.exists(temp_mkv_path):
-                log.error(f"[{self.task_id}] Temporary MKV file not found: {temp_mkv_path}")
+            # 1순위: 진행 훅에서 보고된 파일 경로 사용
+            if self._downloaded_media_path and os.path.exists(self._downloaded_media_path):
+                temp_downloaded_path = self._downloaded_media_path
+            # 2순위: 무확장자 템플릿 그대로 생성된 경우
+            if not temp_downloaded_path and os.path.exists(temp_output_template):
+                temp_downloaded_path = temp_output_template
+            # 3순위: 확장자 후보 스캔
+            if not temp_downloaded_path:
+                candidate_exts = [
+                    ".mkv", ".mp4", ".webm", ".m4v", ".mov", ".ts", ".m2ts",
+                    ".mxf", ".avi"
+                ]
+                for ext in candidate_exts:
+                    candidate = f"{temp_output_template}{ext}"
+                    if os.path.exists(candidate):
+                        temp_downloaded_path = candidate
+                        break
+            # 4순위: glob 검색 (이미지 제외)
+            if not temp_downloaded_path:
+                try:
+                    import glob, os as _os
+                    matches = [p for p in glob.glob(f"{temp_output_template}.*")
+                               if _os.path.splitext(p)[1].lower() not in [".jpg", ".jpeg", ".png", ".webp"]]
+                    if matches:
+                        temp_downloaded_path = max(matches, key=lambda p: os.path.getmtime(p))
+                except Exception as e:
+                    log.debug(f"[{self.task_id}] Glob search failed: {e}")
+
+            if not temp_downloaded_path or not os.path.exists(temp_downloaded_path):
+                log.error(f"[{self.task_id}] Temporary downloaded file not found for template: {temp_output_template}")
                 self.signals.finished.emit(self.task_id, False)
                 return
             
-            log.info(f"[{self.task_id}] Temporary file downloaded: {temp_mkv_path}")
+            log.info(f"[{self.task_id}] Temporary file downloaded: {temp_downloaded_path}")
             
             # --- 썸네일 파일 처리 (이름 변경 및 .webp -> .png 변환) ---
             final_basename, _ = os.path.splitext(self.output_file)
@@ -401,7 +438,7 @@ class DownloadWorker(BaseWorker):
             log.info(f"[{self.task_id}] Starting manual FFmpeg processing.")
             self.signals.progress.emit(self.task_id, 0, 0) # 처리 중 상태로 변경
 
-            ffmpeg_cmd = [self.ffmpeg_path, "-y", "-i", temp_mkv_path]
+            ffmpeg_cmd = [self.ffmpeg_path, "-y", "-i", temp_downloaded_path]
 
             if self.start_time:
                 ffmpeg_cmd.extend(["-ss", self.start_time])
@@ -470,13 +507,13 @@ class DownloadWorker(BaseWorker):
                 )
             self.signals.finished.emit(self.task_id, False)
         finally:
-            # --- 3단계: 임시 파일 정리 ---
-            if os.path.exists(temp_mkv_path):
-                try:
-                    os.remove(temp_mkv_path)
-                    log.info(f"[{self.task_id}] Removed temporary file: {temp_mkv_path}")
-                except OSError as e:
-                    log.warning(f"[{self.task_id}] Failed to remove temp file {temp_mkv_path}: {e}")
+            # 생성된 임시 파일 정리
+            try:
+                if temp_downloaded_path and os.path.exists(temp_downloaded_path):
+                    os.remove(temp_downloaded_path)
+                    log.info(f"[{self.task_id}] Removed temporary file: {temp_downloaded_path}")
+            except OSError as e:
+                log.warning(f"[{self.task_id}] Failed to remove temp file {temp_downloaded_path}: {e}")
             
             self.ydl = None
             log.debug(f"[{self.task_id}] Download worker finished execution.")

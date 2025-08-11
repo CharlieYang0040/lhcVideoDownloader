@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Signal, Slot, QThread, Qt, QObject
 import yt_dlp
 from app.youtube_auth import YouTubeAuthWindow
+from app.vimeo_auth import VimeoAuthWindow
 from app.config_manager import ConfigManager
 import tempfile
 import json
@@ -152,11 +153,11 @@ class VideoDownloaderApp(QMainWindow):
         self.login_status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.login_help_label = QLabel("ℹ️")
         self.login_help_label.setToolTip(
-            "YouTube 등 일부 사이트의 연령 제한 영상 등은 로그인이 필요할 수 있습니다.\n"
-            "로그인이 필요한 경우, '사이트 로그인' 버튼을 클릭하고\n"
+            "YouTube/Vimeo 등 일부 사이트의 영상은 로그인이 필요할 수 있습니다.\n"
+            "로그인이 필요한 경우, '사이트 로그인' 버튼에서 사이트를 선택하고\n"
             "로그인을 완료한 후 잠시 기다려주세요."
         )
-        self.login_btn = QPushButton("사이트 로그인")
+        self.login_btn = QPushButton("사이트 로그인 ▾")
         self.logout_btn = QPushButton("로그아웃")
         self.logout_btn.setVisible(False)  # 초기 상태는 숨김
         self.open_config_btn = QPushButton("설정 폴더 열기")
@@ -241,7 +242,7 @@ class VideoDownloaderApp(QMainWindow):
         # 버튼 클릭
         self.paste_btn.clicked.connect(self.paste_from_clipboard)
         self.download_btn.clicked.connect(self.start_extraction)
-        self.login_btn.clicked.connect(self.show_login_window)
+        self.login_btn.clicked.connect(self.show_login_menu)
         self.logout_btn.clicked.connect(self.logout)
         self.open_config_btn.clicked.connect(self.open_config_folder)
         self.save_path_btn.clicked.connect(self.choose_save_path)
@@ -376,7 +377,8 @@ class VideoDownloaderApp(QMainWindow):
             return
 
         # 쿠키 준비
-        cookie_file = self.load_and_prepare_cookies()
+        self.load_and_prepare_cookies()
+        cookie_file = self.temp_cookie_file_path
         
         # 시간 지정 값 가져오기
         start_time = None
@@ -440,19 +442,32 @@ class VideoDownloaderApp(QMainWindow):
         clipboard = QApplication.clipboard()
         self.url_input.setText(clipboard.text())
 
-    def show_login_window(self):
-        """YouTube 로그인 창을 표시하거나 이미 열려있으면 활성화."""
-        logging.info("로그인 창 표시 요청")
+    def show_login_menu(self):
+        """로그인 대상 선택 메뉴 표시 (YouTube/Vimeo)."""
+        menu = QMenu(self)
+        act_youtube = menu.addAction("YouTube 로그인")
+        act_vimeo = menu.addAction("Vimeo 로그인")
+
+        action = menu.exec(self.login_btn.mapToGlobal(self.login_btn.rect().bottomLeft()))
+        if action == act_youtube:
+            self._open_auth_window("youtube")
+        elif action == act_vimeo:
+            self._open_auth_window("vimeo")
+
+    def _open_auth_window(self, site: str):
+        logging.info(f"로그인 창 표시 요청: {site}")
         if self.auth_window and self.auth_window.isVisible():
-            logging.info("로그인 창이 이미 열려 있음. 활성화.")
             self.auth_window.activateWindow()
             self.auth_window.raise_()
             return
         try:
-            logging.info("AuthWindow 인스턴스 생성 시도...")
-            self.auth_window = YouTubeAuthWindow(config_manager=self.config_manager)
+            if site == "youtube":
+                self.auth_window = YouTubeAuthWindow(config_manager=self.config_manager)
+            elif site == "vimeo":
+                self.auth_window = VimeoAuthWindow(config_manager=self.config_manager)
+            else:
+                return
             self.auth_window.login_completed.connect(self.handle_login_completed)
-            logging.info("AuthWindow 생성 및 시그널 연결 완료.")
             self.auth_window.show()
         except Exception as e:
             logging.exception("AuthWindow 생성 중 오류")
