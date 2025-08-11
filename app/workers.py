@@ -237,6 +237,8 @@ class DownloadWorker(BaseWorker):
         self.ydl = None
         # yt-dlp 진행 중 보고되는 실제 미디어 파일 경로 (hook로 수집)
         self._downloaded_media_path: str | None = None
+        # 선택된 인코더 유형 로깅용
+        self._selected_encoder_key: str = "cpu"
 
     def progress_hook(self, d):
         """yt-dlp 진행률 콜백 함수. 진행률 시그널 전송 및 취소 확인."""
@@ -438,54 +440,124 @@ class DownloadWorker(BaseWorker):
             log.info(f"[{self.task_id}] Starting manual FFmpeg processing.")
             self.signals.progress.emit(self.task_id, 0, 0) # 처리 중 상태로 변경
 
-            ffmpeg_cmd = [self.ffmpeg_path, "-y", "-i", temp_downloaded_path]
+            def build_ffmpeg_cmd(encoder_key: str) -> list[str]:
+                cmd = [self.ffmpeg_path, "-y", "-i", temp_downloaded_path]
+                if self.start_time:
+                    cmd.extend(["-ss", self.start_time])
+                if self.end_time:
+                    cmd.extend(["-to", self.end_time])
 
-            if self.start_time:
-                ffmpeg_cmd.extend(["-ss", self.start_time])
-            if self.end_time:
-                ffmpeg_cmd.extend(["-to", self.end_time])
+                # 선호 인코더/코덱 읽기
+                prefer_hw_enc = (self.base_opts.get('preferred_hw_encoder') or 'auto').lower()
+                prefer_vcodec = (self.base_opts.get('preferred_video_codec') or 'h264').lower()
 
-            # 설정에서 고품질 인코딩 옵션 가져오기
-            pp_args = self.base_opts.get("postprocessor_args", {})
-            convertor_args = pp_args.get("FFmpegVideoConvertor", [])
-            if convertor_args:
-                ffmpeg_cmd.extend(convertor_args)
-            else:
-                # 기본값 설정
-                ffmpeg_cmd.extend(['-c:v', 'libx264', '-c:a', 'aac', '-pix_fmt', 'yuv420p'])
-            
-            if self.debug_mode:
-                log.info(f"[{self.task_id}] Debug mode enabled for FFmpeg.")
-                ffmpeg_cmd.extend(["-loglevel", "debug"])
+                # 인코더 매핑
+                enc_map = {
+                    'nvenc': {'h264': 'h264_nvenc', 'hevc': 'hevc_nvenc'},
+                    'qsv':   {'h264': 'h264_qsv',   'hevc': 'hevc_qsv'},
+                    'amf':   {'h264': 'h264_amf',   'hevc': 'hevc_amf'},
+                    'cpu':   {'h264': 'libx264',    'hevc': 'libx265'},
+                }
 
-            ffmpeg_cmd.append(self.output_file)
+                # encoder_key가 auto인 경우 우선순위 선택 (nvenc -> qsv -> amf -> cpu)
+                selected_key = encoder_key
+                if encoder_key == 'auto':
+                    for k in ['nvenc', 'qsv', 'amf']:
+                        if k in enc_map:  # 빌드에 포함 여부 확인 불가이므로 우선 시도
+                            selected_key = k
+                            break
+                    else:
+                        selected_key = 'cpu'
 
+                # 비디오/오디오 코덱 및 공통 옵션
+                vcodec_name = enc_map.get(selected_key, enc_map['cpu']).get(prefer_vcodec, 'libx264')
+                cmd.extend(['-c:v', vcodec_name])
+
+                # 하드웨어별 튜닝 옵션
+                if selected_key == 'nvenc':
+                    nv_rc = str(self.base_opts.get('nvenc_rc', 'vbr'))
+                    nv_cq = str(self.base_opts.get('nvenc_cq', '19'))
+                    nv_preset = str(self.base_opts.get('nvenc_preset', 'p5'))
+                    cmd.extend(['-rc', nv_rc, '-cq', nv_cq, '-preset', nv_preset])
+                elif selected_key == 'qsv':
+                    qsv_gq = str(self.base_opts.get('qsv_global_quality', '23'))
+                    cmd.extend(['-global_quality', qsv_gq])
+                    # cmd.extend(['-pix_fmt', 'nv12'])  # 필요 시 활성화
+                elif selected_key == 'amf':
+                    amf_quality = str(self.base_opts.get('amf_quality', 'quality'))
+                    cmd.extend(['-quality', amf_quality])
+
+                # 오디오/픽셀 포맷 및 품질 관련 기존 옵션 재사용(충돌 항목 제거)
+                pp_args = self.base_opts.get("postprocessor_args", {})
+                convertor_args = pp_args.get("FFmpegVideoConvertor", [])
+                filtered_args: list[str] = []
+                # '-c:v'와 그 다음 파라미터는 이미 지정했으므로 제거
+                skip_next = False
+                for token in convertor_args:
+                    if skip_next:
+                        skip_next = False
+                        continue
+                    if token == '-c:v':
+                        skip_next = True
+                        continue
+                    filtered_args.append(token)
+                # 기본 오디오/픽셀 포맷 추가 (중복 없이)
+                if '-c:a' not in filtered_args:
+                    filtered_args.extend(['-c:a', 'aac'])
+                if '-pix_fmt' not in filtered_args:
+                    filtered_args.extend(['-pix_fmt', 'yuv420p'])
+
+                cmd.extend(filtered_args)
+
+                if self.debug_mode:
+                    cmd.extend(["-loglevel", "debug"])
+
+                cmd.append(self.output_file)
+                self._selected_encoder_key = selected_key
+                return cmd
+
+            # 1차: 선호 인코더 기반 커맨드
+            preferred_key = (self.base_opts.get('preferred_hw_encoder') or 'auto').lower()
+            if preferred_key not in ('auto', 'nvenc', 'qsv', 'amf', 'cpu'):
+                preferred_key = 'auto'
+
+            ffmpeg_cmd = build_ffmpeg_cmd(preferred_key)
+            log.info(f"[{self.task_id}] Using encoder: {self._selected_encoder_key} ({'HEVC' if (self.base_opts.get('preferred_video_codec') or 'h264').lower()=='hevc' else 'H.264'})")
             log.info(f"[{self.task_id}] Executing FFmpeg command: {' '.join(ffmpeg_cmd)}")
 
-            # subprocess.communicate()를 사용하여 데드락을 방지합니다.
-            process = subprocess.Popen(
-                ffmpeg_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                universal_newlines=True,
-                encoding='utf-8',
-                errors='replace',
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            )
-            
-            stdout, _ = process.communicate()
+            # 실행 함수
+            def run_ffmpeg(cmd: list[str]) -> tuple[int, str]:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    universal_newlines=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                )
+                stdout, _ = process.communicate()
+                if self.debug_mode and stdout:
+                    for line in stdout.splitlines():
+                        log.info(f"[ffmpeg-{self.task_id}] {line.strip()}")
+                return process.returncode, stdout or ""
 
-            if self.debug_mode and stdout:
-                for line in stdout.splitlines():
-                    log.info(f"[ffmpeg-{self.task_id}] {line.strip()}")
-            
+            code, out = run_ffmpeg(ffmpeg_cmd)
+
             if self.is_cancelled():
-                 raise yt_dlp.utils.DownloadCancelled("Download cancelled by user.")
+                raise yt_dlp.utils.DownloadCancelled("Download cancelled by user.")
 
-            if process.returncode != 0:
-                log.error(f"[{self.task_id}] FFmpeg processing failed with code {process.returncode}.")
-                if stdout:
-                    log.error(f"[{self.task_id}] FFmpeg output:\n{stdout}")
+            # 하드웨어 실패 시 CPU 폴백 1회 시도
+            if code != 0 and self._selected_encoder_key != 'cpu':
+                log.warning(f"[{self.task_id}] Hardware encoder '{self._selected_encoder_key}' failed (code {code}). Falling back to CPU.")
+                ffmpeg_cmd_cpu = build_ffmpeg_cmd('cpu')
+                log.info(f"[{self.task_id}] Executing FFmpeg command (CPU fallback): {' '.join(ffmpeg_cmd_cpu)}")
+                code, out = run_ffmpeg(ffmpeg_cmd_cpu)
+
+            if code != 0:
+                log.error(f"[{self.task_id}] FFmpeg processing failed with code {code}.")
+                if out:
+                    log.error(f"[{self.task_id}] FFmpeg output:\n{out}")
                 self.signals.finished.emit(self.task_id, False)
                 return
             
