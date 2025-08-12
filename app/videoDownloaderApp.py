@@ -310,7 +310,8 @@ class VideoDownloaderApp(QMainWindow):
         logging.info("저장된 쿠키 로드 시도...")
         self.temp_cookie_file_path = None
         try:
-            netscape_cookie_string = self.config_manager.load_cookies()
+            # 사이트별 저장된 쿠키를 병합하여 사용
+            netscape_cookie_string = self.config_manager.load_cookies_merged()
             if netscape_cookie_string:
                 self.cleanup_temp_files()
                 temp_cookie_file = tempfile.NamedTemporaryFile(

@@ -96,18 +96,21 @@ def find_and_move_ffmpeg(extract_dir, target_path):
     logging.info(f"Searching for ffmpeg.exe in {extract_dir}")
     ffmpeg_found = False
     source_ffmpeg_path = None
+    source_ffprobe_path = None
 
     # 압축 해제된 폴더 구조 내에서 ffmpeg.exe 검색
     # 보통 최상위 폴더 이름은 버전마다 다르므로 내부를 탐색
     for root, dirs, files in os.walk(extract_dir):
-        if "ffmpeg.exe" in files and os.path.basename(root) == "bin":
-            source_ffmpeg_path = os.path.join(root, "ffmpeg.exe")
-            logging.info(f"ffmpeg.exe found at: {source_ffmpeg_path}")
-            ffmpeg_found = True
-            break
-        # 혹시 모르니 다른 경로도 체크 (예: bin 폴더가 루트에 바로 있을 경우)
-        # elif "ffmpeg.exe" in files and root == extract_dir:
-        #     ... handle this case if needed ...
+        if os.path.basename(root) == "bin":
+            if "ffmpeg.exe" in files:
+                source_ffmpeg_path = os.path.join(root, "ffmpeg.exe")
+                logging.info(f"ffmpeg.exe found at: {source_ffmpeg_path}")
+                ffmpeg_found = True
+            if "ffprobe.exe" in files:
+                source_ffprobe_path = os.path.join(root, "ffprobe.exe")
+                logging.info(f"ffprobe.exe found at: {source_ffprobe_path}")
+            if ffmpeg_found:
+                break
 
     if not ffmpeg_found:
         logging.error(
@@ -123,6 +126,15 @@ def find_and_move_ffmpeg(extract_dir, target_path):
         logging.info(f"Moving {source_ffmpeg_path} to {target_path}")
         shutil.move(source_ffmpeg_path, target_path)
         logging.info("ffmpeg.exe moved successfully.")
+        # ffprobe.exe도 같은 bin 경로로 이동
+        if source_ffprobe_path:
+            target_ffprobe_path = os.path.join(os.path.dirname(target_path), "ffprobe.exe")
+            try:
+                logging.info(f"Moving {source_ffprobe_path} to {target_ffprobe_path}")
+                shutil.move(source_ffprobe_path, target_ffprobe_path)
+                logging.info("ffprobe.exe moved successfully.")
+            except Exception as e:
+                logging.warning(f"Failed to move ffprobe.exe: {e}")
         return True
     except Exception as e:
         logging.error(f"Failed to move ffmpeg.exe: {e}")

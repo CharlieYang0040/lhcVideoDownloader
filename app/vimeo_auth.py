@@ -135,7 +135,7 @@ class VimeoAuthWindow(QWidget):
             self.login_error.emit("쿠키 정보를 생성하지 못했습니다.")
             # 창은 닫지 않고 사용자가 다시 시도할 수 있도록 유지
             return
-        ok = self.config_manager.save_cookies(cookie_string)
+        ok = self.config_manager.save_cookies_for_site('vimeo', cookie_string)
         if ok:
             self.login_completed.emit()
         else:

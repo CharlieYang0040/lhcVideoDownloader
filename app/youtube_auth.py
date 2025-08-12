@@ -284,9 +284,9 @@ class YouTubeAuthWindow(QWidget):
             self.close()
             return
 
-        # ConfigManager를 통해 쿠키 저장 시도
-        log.info("Saving cookies via ConfigManager...")
-        save_successful = self.config_manager.save_cookies(cookie_string)
+        # ConfigManager를 통해 사이트별 쿠키 저장 시도
+        log.info("Saving YouTube cookies via ConfigManager...")
+        save_successful = self.config_manager.save_cookies_for_site('youtube', cookie_string)
 
         if save_successful:
             log.info("Cookies saved successfully. Emitting login_completed signal.")

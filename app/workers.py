@@ -491,14 +491,16 @@ class DownloadWorker(BaseWorker):
                 pp_args = self.base_opts.get("postprocessor_args", {})
                 convertor_args = pp_args.get("FFmpegVideoConvertor", [])
                 filtered_args: list[str] = []
-                # '-c:v'와 그 다음 파라미터는 이미 지정했으므로 제거
+                # '-c:v'와 그 다음 파라미터, '-loglevel'과 그 다음 파라미터는 제거
                 skip_next = False
+                skip_key = None
                 for token in convertor_args:
                     if skip_next:
                         skip_next = False
                         continue
-                    if token == '-c:v':
+                    if token in ('-c:v', '-loglevel'):
                         skip_next = True
+                        skip_key = token
                         continue
                     filtered_args.append(token)
                 # 기본 오디오/픽셀 포맷 추가 (중복 없이)
@@ -509,8 +511,14 @@ class DownloadWorker(BaseWorker):
 
                 cmd.extend(filtered_args)
 
+                # 진행률 출력을 위해 progress 옵션 추가
+                cmd.extend(['-progress', 'pipe:1'])
+
+                # 로깅 레벨 설정
                 if self.debug_mode:
-                    cmd.extend(["-loglevel", "debug"])
+                    cmd.extend(["-loglevel", "debug"])  # 디버그는 상세 로그 유지
+                else:
+                    cmd.extend(["-hide_banner", "-nostats", "-loglevel", "error"])  # 진행 로그만
 
                 cmd.append(self.output_file)
                 self._selected_encoder_key = selected_key
@@ -525,8 +533,61 @@ class DownloadWorker(BaseWorker):
             log.info(f"[{self.task_id}] Using encoder: {self._selected_encoder_key} ({'HEVC' if (self.base_opts.get('preferred_video_codec') or 'h264').lower()=='hevc' else 'H.264'})")
             log.info(f"[{self.task_id}] Executing FFmpeg command: {' '.join(ffmpeg_cmd)}")
 
-            # 실행 함수
-            def run_ffmpeg(cmd: list[str]) -> tuple[int, str]:
+            # 총 길이(seconds) 계산
+            def _parse_hms_to_seconds(hms: str) -> float:
+                try:
+                    parts = hms.split(':')
+                    parts = [p.strip() for p in parts]
+                    if len(parts) == 3:
+                        h, m, s = parts
+                        return int(h) * 3600 + int(m) * 60 + float(s)
+                    if len(parts) == 2:
+                        m, s = parts
+                        return int(m) * 60 + float(s)
+                    return float(parts[0])
+                except Exception:
+                    return 0.0
+
+            def _get_total_duration_seconds() -> float | None:
+                # 시간 지정 케이스 우선
+                if self.start_time and self.end_time:
+                    return max(0.0, _parse_hms_to_seconds(self.end_time) - _parse_hms_to_seconds(self.start_time))
+                # ffprobe 사용
+                try:
+                    ffmpeg_dir = os.path.dirname(self.ffmpeg_path)
+                    ffprobe_path = os.path.join(ffmpeg_dir, 'ffprobe.exe' if os.name == 'nt' else 'ffprobe')
+                    if os.path.exists(ffprobe_path):
+                        probe = subprocess.run(
+                            [ffprobe_path, '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', temp_downloaded_path],
+                            capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                        )
+                        if probe.returncode == 0:
+                            try:
+                                return float((probe.stdout or '').strip())
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                # 폴백: ffmpeg -i 출력의 Duration 파싱
+                try:
+                    import re
+                    proc = subprocess.run(
+                        [self.ffmpeg_path, '-hide_banner', '-i', temp_downloaded_path],
+                        capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                    )
+                    stderr = proc.stderr or ''
+                    # 예: Duration: 00:03:21.12, start: 0.000000, bitrate: 320 kb/s
+                    m = re.search(r'Duration:\s*(\d{2}:\d{2}:\d{2}(?:\.\d+)?)', stderr)
+                    if m:
+                        return _parse_hms_to_seconds(m.group(1))
+                except Exception:
+                    pass
+                return None
+
+            total_duration = _get_total_duration_seconds()
+
+            # 실행 함수(진행률 파싱)
+            def run_ffmpeg_with_progress(cmd: list[str]) -> tuple[int, str]:
                 process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
@@ -534,15 +595,48 @@ class DownloadWorker(BaseWorker):
                     universal_newlines=True,
                     encoding='utf-8',
                     errors='replace',
+                    bufsize=1,
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                 )
-                stdout, _ = process.communicate()
-                if self.debug_mode and stdout:
-                    for line in stdout.splitlines():
-                        log.info(f"[ffmpeg-{self.task_id}] {line.strip()}")
-                return process.returncode, stdout or ""
+                captured_lines: list[str] = []
+                current_ms: int | None = None
+                while True:
+                    line = process.stdout.readline()
+                    if not line:
+                        if process.poll() is not None:
+                            break
+                        continue
+                    captured_lines.append(line)
+                    l = line.strip()
+                    if self.debug_mode:
+                        try:
+                            log.info(f"[ffmpeg-{self.task_id}] {l}")
+                        except Exception:
+                            pass
+                    if '=' in l:
+                        key, value = l.split('=', 1)
+                        key = key.strip().lower()
+                        value = value.strip()
+                        if key == 'out_time_ms':
+                            try:
+                                current_ms = int(value)
+                            except ValueError:
+                                current_ms = None
+                            # 진행률 계산
+                            if total_duration and total_duration > 0 and current_ms is not None:
+                                sec = current_ms / 1_000_000.0
+                                percent = max(0, min(100, int(sec / total_duration * 100)))
+                                self.signals.progress.emit(self.task_id, percent, 100)
+                        elif key == 'out_time' and total_duration and total_duration > 0:
+                            sec = _parse_hms_to_seconds(value)
+                            percent = max(0, min(100, int(sec / total_duration * 100)))
+                            self.signals.progress.emit(self.task_id, percent, 100)
+                        elif key == 'progress' and value == 'end' and total_duration and total_duration > 0:
+                            self.signals.progress.emit(self.task_id, 100, 100)
+                stdout = ''.join(captured_lines)
+                return process.returncode or 0, stdout
 
-            code, out = run_ffmpeg(ffmpeg_cmd)
+            code, out = run_ffmpeg_with_progress(ffmpeg_cmd)
 
             if self.is_cancelled():
                 raise yt_dlp.utils.DownloadCancelled("Download cancelled by user.")
@@ -552,7 +646,7 @@ class DownloadWorker(BaseWorker):
                 log.warning(f"[{self.task_id}] Hardware encoder '{self._selected_encoder_key}' failed (code {code}). Falling back to CPU.")
                 ffmpeg_cmd_cpu = build_ffmpeg_cmd('cpu')
                 log.info(f"[{self.task_id}] Executing FFmpeg command (CPU fallback): {' '.join(ffmpeg_cmd_cpu)}")
-                code, out = run_ffmpeg(ffmpeg_cmd_cpu)
+                code, out = run_ffmpeg_with_progress(ffmpeg_cmd_cpu)
 
             if code != 0:
                 log.error(f"[{self.task_id}] FFmpeg processing failed with code {code}.")

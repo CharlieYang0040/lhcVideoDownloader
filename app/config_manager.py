@@ -81,6 +81,11 @@ class ConfigManager:
         self.cookies_dir = os.path.join(self.app_dir, "cookies")
         self.encryption_key_file = os.path.join(self.config_dir, "encryption.key")
         self.encrypted_cookie_file = os.path.join(self.cookies_dir, "session.cookies")
+        # 사이트별 쿠키 파일 경로
+        self.site_cookie_files = {
+            "youtube": os.path.join(self.cookies_dir, "youtube.cookies"),
+            "vimeo": os.path.join(self.cookies_dir, "vimeo.cookies"),
+        }
 
         # FFmpeg 경로 초기화
         self.ffmpeg_path = self._determine_ffmpeg_path()
@@ -128,6 +133,11 @@ class ConfigManager:
         # 설정 파일 로드 및 버전 관리
         self._settings = self.load_all_settings()
         self._check_and_update_settings()
+        # 레거시 단일 쿠키 파일이 있다면 사이트별 파일로 마이그레이션
+        try:
+            self._migrate_legacy_cookies_to_site_files()
+        except Exception as e:
+            log.warning(f"레거시 쿠키 마이그레이션 중 오류: {e}")
 
     def _check_and_update_settings(self):
         """설정 파일의 버전을 확인하고 필요한 경우 업데이트합니다."""
@@ -267,6 +277,130 @@ class ConfigManager:
             log.exception(f"쿠키 암호화 또는 저장 중 예상치 못한 오류 발생: {e}")
         return False  # 실패 반환
 
+    # --- 사이트별 쿠키 API ---
+    def _get_site_cookie_path(self, site: str) -> str:
+        site_l = (site or "").lower()
+        if site_l not in self.site_cookie_files:
+            raise ValueError(f"Unsupported site for cookies: {site}")
+        return self.site_cookie_files[site_l]
+
+    def save_cookies_for_site(self, site: str, netscape_cookie_string: str) -> bool:
+        """특정 사이트의 쿠키를 기존 값과 병합하여 암호화 저장합니다."""
+        if not self.fernet:
+            log.error("암호화 시스템이 초기화되지 않아 쿠키를 저장할 수 없습니다.")
+            return False
+        try:
+            site_path = self._get_site_cookie_path(site)
+            # 기존 로드
+            existing = self.load_cookies_for_site(site) or ""
+            # 병합
+            merged = self._merge_two_cookie_strings(existing, netscape_cookie_string)
+            encrypted_data = self.fernet.encrypt(merged.encode("utf-8"))
+            os.makedirs(os.path.dirname(site_path), exist_ok=True)
+            with open(site_path, "wb") as f:
+                f.write(encrypted_data)
+            log.info(f"사이트('{site}') 쿠키 저장 완료: {site_path}")
+            return True
+        except Exception as e:
+            log.exception(f"사이트('{site}') 쿠키 저장 실패: {e}")
+            return False
+
+    def load_cookies_for_site(self, site: str) -> str | None:
+        """특정 사이트의 암호화된 쿠키를 복호화 문자열로 반환."""
+        if not self.fernet:
+            return None
+        try:
+            site_path = self._get_site_cookie_path(site)
+            if not os.path.exists(site_path):
+                return None
+            with open(site_path, "rb") as f:
+                enc = f.read()
+            if not enc:
+                return None
+            dec = self.fernet.decrypt(enc).decode("utf-8")
+            return dec
+        except InvalidToken:
+            log.error(f"사이트('{site}') 쿠키 복호화 실패. 파일을 삭제합니다: {self._get_site_cookie_path(site)}")
+            try:
+                os.remove(self._get_site_cookie_path(site))
+            except OSError:
+                pass
+            return None
+        except Exception as e:
+            log.warning(f"사이트('{site}') 쿠키 로드 실패: {e}")
+            return None
+
+    def delete_cookies_for_site(self, site: str) -> bool:
+        try:
+            site_path = self._get_site_cookie_path(site)
+            if os.path.exists(site_path):
+                os.remove(site_path)
+                log.info(f"사이트('{site}') 쿠키 파일 삭제 완료: {site_path}")
+            return True
+        except OSError as e:
+            log.exception(f"사이트('{site}') 쿠키 파일 삭제 실패: {e}")
+            return False
+
+    def load_cookies_merged(self, sites: list[str] | None = None) -> str | None:
+        """여러 사이트의 쿠키를 병합한 Netscape 문자열을 반환."""
+        sites = sites or list(self.site_cookie_files.keys())
+        all_list: list[dict] = []
+        for s in sites:
+            s_str = self.load_cookies_for_site(s)
+            if s_str:
+                all_list.extend(self._parse_netscape_cookie_string(s_str))
+        if not all_list:
+            # 레거시 파일도 시도
+            legacy = self.load_cookies()
+            if legacy:
+                return legacy
+            return None
+        # 키 병합
+        merged: dict[tuple, dict] = {}
+        for c in all_list:
+            key = (c.get("domain", ""), c.get("path", ""), c.get("name", ""))
+            merged[key] = c
+        return self._serialize_netscape_cookies(list(merged.values()))
+
+    # 두 문자열을 병합
+    def _merge_two_cookie_strings(self, a: str, b: str) -> str:
+        a_list = self._parse_netscape_cookie_string(a)
+        b_list = self._parse_netscape_cookie_string(b)
+        merged: dict[tuple, dict] = {}
+        for c in a_list:
+            merged[(c.get("domain", ""), c.get("path", ""), c.get("name", ""))] = c
+        for c in b_list:
+            merged[(c.get("domain", ""), c.get("path", ""), c.get("name", ""))] = c
+        return self._serialize_netscape_cookies(list(merged.values()))
+
+    def _migrate_legacy_cookies_to_site_files(self):
+        """레거시 단일 쿠키 파일을 사이트별 파일로 분배 저장합니다."""
+        if not os.path.exists(self.encrypted_cookie_file):
+            return
+        legacy = self.load_cookies()
+        if not legacy:
+            return
+        cookies = self._parse_netscape_cookie_string(legacy)
+        yt_list, vi_list, other_list = [], [], []
+        for c in cookies:
+            d = (c.get("domain", "") or "").lower()
+            if any(k in d for k in [".youtube.com", "youtube.com", ".google.com", "google.com"]):
+                yt_list.append(c)
+            elif any(k in d for k in [".vimeo.com", "vimeo.com", "player.vimeo.com", "api.vimeo.com", "secure.vimeo.com"]):
+                vi_list.append(c)
+            else:
+                other_list.append(c)
+        if yt_list:
+            self.save_cookies_for_site("youtube", self._serialize_netscape_cookies(yt_list))
+        if vi_list:
+            self.save_cookies_for_site("vimeo", self._serialize_netscape_cookies(vi_list))
+        # 기타는 유지하지 않음 (필요 시 확장)
+        try:
+            os.remove(self.encrypted_cookie_file)
+            log.info(f"레거시 쿠키 파일 삭제: {self.encrypted_cookie_file}")
+        except OSError:
+            pass
+
     # --- Netscape 쿠키 포맷 유틸 ---
     def _parse_netscape_cookie_string(self, cookie_str: str) -> list:
         """Netscape 쿠키 문자열을 파싱하여 쿠키 딕셔너리 리스트로 반환합니다.
@@ -394,17 +528,25 @@ class ConfigManager:
         Returns:
             bool: 삭제 성공 여부 (파일이 없어도 True 반환).
         """
+        overall_ok = True
+        # 레거시 파일 삭제
         try:
             if os.path.exists(self.encrypted_cookie_file):
                 os.remove(self.encrypted_cookie_file)
                 log.info(f"암호화된 쿠키 파일 삭제 완료: {self.encrypted_cookie_file}")
-                return True
-            else:
-                log.info("삭제할 쿠키 파일이 이미 존재하지 않습니다.")
-                return True  # 이미 없어도 성공으로 간주
         except (IOError, OSError) as e:
-            log.exception(f"쿠키 파일 삭제 중 오류 발생: {e}")
-            return False
+            log.exception(f"레거시 쿠키 파일 삭제 중 오류: {e}")
+            overall_ok = False
+        # 사이트별 파일 삭제
+        for site, path in self.site_cookie_files.items():
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+                    log.info(f"사이트('{site}') 쿠키 파일 삭제 완료: {path}")
+            except (IOError, OSError) as e:
+                log.exception(f"사이트('{site}') 쿠키 파일 삭제 중 오류: {e}")
+                overall_ok = False
+        return overall_ok
 
     # --- 설정 저장/로드 메서드 --- (오류 처리 강화)
     def get_settings_file_path(self):
