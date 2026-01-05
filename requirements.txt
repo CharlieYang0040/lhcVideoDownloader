@@ -1,5 +1,1 @@
 PySide6
-yt_dlp
-cryptography
-requests
-tqdm
