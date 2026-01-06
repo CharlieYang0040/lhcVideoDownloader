@@ -13,6 +13,19 @@ a = Analysis(
     hiddenimports=[
         'PySide6.QtWebEngineWidgets',
         'PySide6.QtWebEngineCore',
+        'glob',
+        'json',
+        'os',
+        'sys',
+        'logging',
+        'shutil',
+        're',
+        'subprocess',
+        'locale',
+        'threading',
+        'time',
+        'datetime',
+        'appdirs'
     ],
     hookspath=[],
     hooksconfig={},
@@ -41,7 +54,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    # icon='resources/icon.ico'  <-- Uncomment if you have an icon
+    icon='resources/icon.ico'
 )
 coll = COLLECT(
     exe,

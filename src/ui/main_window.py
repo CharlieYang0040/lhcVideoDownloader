@@ -132,11 +132,15 @@ class MainWindow(QMainWindow):
         
         # Restore Auth
         saved_auth = self.config.get("last_auth_method")
-        index = self.auth_type_combo.findText(saved_auth) if saved_auth else 0
+        # Default to "인증 안 함" (No Auth) if not set
+        if not saved_auth:
+            saved_auth = "인증 안 함"
+
+        index = self.auth_type_combo.findText(saved_auth)
         if index >= 0:
             self.auth_type_combo.setCurrentIndex(index)
         else:
-            self.auth_type_combo.setCurrentIndex(0) # Default to App Login
+            self.auth_type_combo.setCurrentIndex(3) # Default to No Auth
 
         self.auth_type_combo.setToolTip("연령 제한 영상을 위한 인증 방식입니다.\n'앱 내 로그인'을 추천합니다.")
         self.auth_type_combo.currentIndexChanged.connect(self.toggle_auth_input)
