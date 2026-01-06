@@ -1,6 +1,12 @@
-import subprocess
 import os
+import subprocess
+import threading
 import re
+import sys
+import logging
+import locale
+import shutil
+import glob
 from PySide6.QtCore import QObject, Signal, QThread
 from src.utils.helpers import get_lib_path, check_js_runtime
 
@@ -14,278 +20,376 @@ class VideoDownloader(QObject):
     finished = Signal()
     error_occurred = Signal(str)
 
-    def __init__(self, url, download_path, audio_only=False, cookies_browser=None, post_process=None):
+    def __init__(self, url, path, audio_only, cookies, codec, preset, target_ext, overwrite=False, threads=1, fragments=5):
         super().__init__()
         self.url = url
-        self.download_path = download_path
+        self.download_path = path
         self.audio_only = audio_only
-        self.cookies_browser = cookies_browser
-        self.post_process = post_process # 'H264 (CPU)', 'NVENC H264', or None
+        self.cookies = cookies
+        self.codec = codec
+        self.preset = preset
+        self.target_ext = target_ext
+        self.overwrite = overwrite
+        self.threads = threads
+        self.fragments = fragments
+        
         self.is_running = False
         self.process = None
+        self.current_filename = None
+        self.logger = logging.getLogger(self.__class__.__name__)
 
     def start_download(self):
         self.is_running = True
+        self.logger.debug(f"Starting download for URL: {self.url}")
+        self.logger.debug(f"Options: Audio={self.audio_only}, Codec={self.codec}, Ext={self.target_ext}, Overwrite={self.overwrite}")
         
-        # Check for JS Runtime (Required for YouTube EJS)
-        if "youtube.com" in self.url or "youtu.be" in self.url:
-            js_runtime = check_js_runtime()
-            if not js_runtime:
-                self.error_occurred.emit(
-                    "YouTube 다운로드를 위해 JavasScript 런타임(Deno)이 필요합니다.\n"
-                    "https://deno.com 에서 설치해주세요."
-                )
-                return
-        else:
-             # Not youtube, might not need it, but good to have
-             js_runtime = check_js_runtime()
-        
+        # Determine paths
         yt_dlp_path = get_lib_path('yt-dlp')
         ffmpeg_path = get_lib_path('ffmpeg')
-        ffmpeg_dir = os.path.dirname(ffmpeg_path)
-
+        
+        # Check dependencies
         if not yt_dlp_path or not os.path.exists(yt_dlp_path):
-            self.error_occurred.emit("yt-dlp.exe not found in libs/yt-dlp/")
+            self.error_occurred.emit("yt-dlp.exe not found.")
             return
 
-        # Prepare command
-        cmd = [
-            yt_dlp_path,
-            self.url,
-            '--ffmpeg-location', ffmpeg_dir,
-            '-o', os.path.join(self.download_path, '%(title)s.%(ext)s'),
-            '--newline', # Important for real-time output parsing
-            '--no-colors',
-            '--progress-template', '%(progress._percent_str)s|%(progress.speed_str)s|%(progress.eta_str)s'
-        ]
-
-        # Explicitly pass JS Runtime if it's a path (bundled)
-        if js_runtime and os.path.isabs(js_runtime):
-             # Format: --js-runtimes "deno:/path/to/deno.exe"
-             cmd.extend(['--js-runtimes', f'deno:{js_runtime}'])
-
-        # Authentication (Cookies)
-        # cookies_browser param now can be "browser:chrome" or "file:/path/to/cookies.txt"
-        if self.cookies_browser:
-            if self.cookies_browser.startswith("browser:"):
-                browser_name = self.cookies_browser.split(":", 1)[1]
-                cmd.extend(['--cookies-from-browser', browser_name])
-            elif self.cookies_browser.startswith("file:"):
-                file_path = self.cookies_browser.split(":", 1)[1]
-                cmd.extend(['--cookies', file_path])
-            # Fallback for legacy calls (if any)
-            elif self.cookies_browser.lower() != "none" and ":" not in self.cookies_browser:
-                 cmd.extend(['--cookies-from-browser', self.cookies_browser])
-
-        # Audio / Video Selection
-        if self.audio_only:
-            cmd.extend(['-x', '--audio-format', 'mp3'])
-        else:
-            # Merge video+audio into mp4 for compatibility
-            cmd.extend(['--merge-output-format', 'mp4'])
-
-        # Post-Processing: REMOVED from yt-dlp args, will handle manually
-        
-        self.log_message.emit(f"Starting download: {' '.join(cmd)}")
-
-        output_file = None
-        duration_sec = 0.0
-
-        try:
-            # STARTUPINFO to hide console window on Windows
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        # JS Runtime Check
+        js_runtime = check_js_runtime()
+        if not js_runtime:
+             self.error_occurred.emit("Javascript runtime not found. Deno or Node.js is required.")
+             return
             
-            # Windows Korean encoding fix: usually cp949
-            encoding = 'cp949' if os.name == 'nt' else 'utf-8'
+        # Build Command
+        cmd = [yt_dlp_path, '--newline'] # newline for easier parsing
+        
+        # Encoding for subprocess
+        # Windows console often uses cp949/cp950 for Korean
+        encoding = locale.getpreferredencoding()
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        
+        # Args
+        cmd.extend(['-o', f"{self.download_path}\\%(title)s.%(ext)s"])
+        
+        # Overwrite
+        if not self.overwrite:
+            cmd.append('--no-overwrites')
+        else:
+            cmd.append('--force-overwrites')
 
+        # Fragments (Download Speed)
+        if self.fragments > 1:
+            cmd.extend(['-N', str(self.fragments)])
+
+        # Smart Format Selection or Transcoding Logic
+        is_smart_selection = False
+        if self.codec == "변환 없음" or self.codec == "None":
+            is_smart_selection = True
+            if self.audio_only:
+                 audio_fmt = self.target_ext if self.target_ext else 'mp3'
+                 # Best audio available for the container
+                 cmd.extend(['-f', f"bestaudio[ext={audio_fmt}]/bestaudio/best"])
+                 cmd.extend(['-x', '--audio-format', audio_fmt]) 
+            elif self.target_ext:
+                 # Video: Try to get native container/codec to avoid transcoding interactions
+                 target = self.target_ext.lower()
+                 
+                 if target == 'mp4':
+                     # Prioritize Resolution first (>1080p), then Compatibility (AVC/H.264)
+                     # 1. Try for 4K/8K (likely VP9/AV1)
+                     # 2. If not found, try for H.264 (likely 1080p)
+                     # 3. Fallback to best available
+                     cmd.extend(['-f', 
+                        "bestvideo[height>1080]+bestaudio/bestvideo[vcodec^=avc]+bestaudio[acodec^=mp4a]/bestvideo+bestaudio/best"
+                     ])
+                     cmd.extend(['--merge-output-format', 'mp4'])
+                     
+                 elif target == 'webm':
+                     # Prioritize vp9/av1 + opus/vorbis
+                     cmd.extend(['-f', "bestvideo[vcodec^=vp9]+bestaudio[acodec^=opus]/bestvideo[ext=webm]+bestaudio[ext=webm]/best[ext=webm]/best"])
+                     cmd.extend(['--merge-output-format', 'webm'])
+                     
+                 else:
+                     # MKV or others: just get best
+                     cmd.extend(['--merge-output-format', target])
+            else:
+                # No specific target, just best
+                pass
+        else:
+            # Transcoding Mode: Use defaults and transcode later
+            if self.audio_only:
+                 audio_fmt = self.target_ext if self.target_ext else 'mp3'
+                 cmd.extend(['-x', '--audio-format', audio_fmt])
+            else:
+                 if self.target_ext:
+                    cmd.extend(['--merge-output-format', self.target_ext])
+
+        # Auth
+        if self.cookies:
+            if self.cookies.startswith("browser:"):
+                browser = self.cookies.split(":")[1]
+                cmd.extend(['--cookies-from-browser', browser])
+            elif self.cookies.startswith("file:"):
+                file_path = self.cookies.split(":", 1)[1]
+                cmd.extend(['--cookies', file_path])
+        
+        # JS runtime
+        if js_runtime and os.path.isabs(js_runtime): 
+            if "deno" in os.path.basename(js_runtime).lower():
+                 cmd.extend(['--js-runtimes', f"deno:{js_runtime}"])
+        
+        if ffmpeg_path:
+             cmd.extend(['--ffmpeg-location', os.path.dirname(ffmpeg_path)])
+
+        cmd.extend([self.url])
+        
+        self.logger.debug(f"Command: {' '.join(cmd)}")
+        self.log_message.emit(f"Command constructed.")
+        
+        final_filename = None
+        skipped = False
+        
+        try:
             self.process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
+                cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.STDOUT, 
+                text=True, 
                 encoding=encoding,
                 errors='replace',
-                startupinfo=startupinfo,
-                bufsize=1,
-                universal_newlines=True
+                startupinfo=startupinfo
             )
-
-            # Read output
-            while True and self.is_running:
-                try:
-                    line = self.process.stdout.readline()
-                except Exception as e:
-                    self.log_message.emit(f"Log read error: {e}")
-                    continue
-
+            
+            # Read Output
+            while self.is_running:
+                line = self.process.stdout.readline()
                 if not line:
                     if self.process.poll() is not None:
                         break
                     continue
-
+                
                 line = line.strip()
-                if not line:
-                    continue
-
-                # Cookie Error Detection
-                if "Could not copy Chrome cookie database" in line:
-                    self.error_occurred.emit(f"Cookie Error: Please close browser or check permissions.")
-                    self.stop()
-                    return
-
-                # Capture Output Filename (Heuristic)
-                if "[Merger] Merging formats into" in line:
-                    match = re.search(r'Merging formats into "(.+?)"', line)
-                    if match:
-                        output_file = match.group(1)
-                elif "[download] Destination:" in line and not output_file:
-                    match = re.search(r'Destination: (.+)', line)
-                    if match:
-                        potential_file = match.group(1)
-                        if not re.search(r'\.f\d+', potential_file): # Skip temp format files
-                            output_file = potential_file
-
-                # Parse progress
-                if '|' in line and '%' in line:
-                    parts = line.split('|')
-                    if len(parts) >= 3:
-                        percent_str = parts[0].strip().replace('%','')
-                        speed = parts[1].strip()
-                        eta = parts[2].strip()
-                        try:
-                            percent = float(percent_str)
-                            self.progress_update.emit(percent, speed, eta)
-                        except ValueError:
-                            pass
+                if not line: continue
+                
+                self.logger.debug(f"[yt-dlp] {line}")
+                
+                # Check for skipped
+                if "has already been downloaded" in line or "Video already in the database" in line:
+                    skipped = True
+                    self.log_message.emit("File already exists. Skipping.")
+                
+                # Parse
+                if '[download]' in line and '%' in line:
+                    self.parse_progress(line)
+                elif 'Destination:' in line or 'Already downloaded:' in line or 'Merging formats into' in line:
+                     parts = line.split(':', 1)
+                     if len(parts) > 1:
+                         fname = parts[1].strip().strip('"')
+                         if not os.path.isabs(fname):
+                             fname = os.path.join(self.download_path, fname)
+                         final_filename = fname
+                         self.current_filename = fname
+                         self.log_message.emit(f"Target File: {final_filename}")
+                     self.log_message.emit(line)
                 else:
                     self.log_message.emit(line)
 
             rc = self.process.poll()
             
-            if not self.is_running:
-                return # Cancelled
-
-            if rc != 0:
-                self.error_occurred.emit(f"Download failed with exit code {rc}")
+            if skipped:
+                self.progress_update.emit(100, "Done (Skipped)", "")
+                self.log_message.emit("Download skipped (File exists).")
+                self.finished.emit()
                 return
 
-            # --- Post Processing (Manual Encoding) ---
-            if self.post_process and self.post_process != "None" and output_file and os.path.exists(output_file):
-                self.log_message.emit(f"Starting Post-Process: {self.post_process}")
-                self.progress_update.emit(0, "Encoding...", "Calculating...") # Start at 0
-                
-                # Get Duration via ffprobe/ffmpeg first
-                try:
-                     probe_cmd = [ffmpeg_path, '-i', output_file]
-                     probe_process = subprocess.run(
-                        probe_cmd, 
-                        stdout=subprocess.PIPE, 
-                        stderr=subprocess.PIPE, 
-                        text=True, 
-                        encoding=encoding,
-                        errors='replace',
-                        startupinfo=startupinfo
-                    )
-                     # Find Duration: 00:03:59.12
-                     match = re.search(r'Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})', probe_process.stderr)
-                     if match:
-                        h, m, s = match.groups()
-                        duration_sec = float(h)*3600 + float(m)*60 + float(s)
-                except Exception as e:
-                    self.log_message.emit(f"Duration check failed: {e}")
-
-                # Rename original to _input
-                base, ext = os.path.splitext(output_file)
-                input_file = f"{base}_raw{ext}"
-                try:
-                    if os.path.exists(input_file):
-                        os.remove(input_file)
-                    os.rename(output_file, input_file)
-                except OSError as e:
-                    self.error_occurred.emit(f"File rename failed: {e}")
+            if rc == 0:
+                self.progress_update.emit(100, "Done", "00:00")
+                self.log_message.emit("Download finished.")
+            else:
+                if not self.is_running: # Cancelled
                     return
+                self.error_occurred.emit(f"Download process failed with code {rc}")
+                self.logger.error(f"yt-dlp failed with code {rc}")
+                return
 
-                # Construct ffmpeg command
-                ffmpeg_cmd = [ffmpeg_path, '-y', '-i', input_file]
-                
-                if self.post_process == 'NVENC H264':
-                    ffmpeg_cmd.extend(['-c:v', 'h264_nvenc', '-rc:v', 'vbr_hq', '-cq:v', '19', '-b:v', '0'])
-                elif self.post_process == 'H264 (CPU)':
-                    ffmpeg_cmd.extend(['-c:v', 'libx264', '-crf', '23'])
-                
-                # Keep audio copy
-                ffmpeg_cmd.extend(['-c:a', 'copy', output_file])
-
-                self.log_message.emit(f"Encoding command: {' '.join(ffmpeg_cmd)}")
-
-                # Run ffmpeg
-                try:
-                    enc_process = subprocess.Popen(
-                        ffmpeg_cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                        encoding=encoding,
-                        errors='replace',
-                        startupinfo=startupinfo
-                    )
-                    
-                    # Read logging from ffmpeg
-                    while self.is_running:
-                        line = enc_process.stdout.readline()
-                        if not line:
-                            if enc_process.poll() is not None:
-                                break
-                            continue
-                        
-                        line = line.strip()
-                        self.log_message.emit(f"[FFmpeg] {line}")
-                        
-                        # Parse Progress
-                        # time=00:00:05.12
-                        if duration_sec > 0 and "time=" in line:
-                            match = re.search(r'time=(\d{2}):(\d{2}):(\d{2}\.\d{2})', line)
-                            if match:
-                                h, m, s = match.groups()
-                                current_sec = float(h)*3600 + float(m)*60 + float(s)
-                                percent = (current_sec / duration_sec) * 100
-                                self.progress_update.emit(percent, "Encoding", "")
-
-                    
-                    if enc_process.returncode == 0:
-                        self.log_message.emit("Encoding completed.")
-                        self.progress_update.emit(100, "Done", "")
-                        # Remove raw file
-                        try:
-                            os.remove(input_file)
-                        except:
-                            pass
-                        self.finished.emit()
-                    else:
-                        self.error_occurred.emit(f"Encoding failed: {enc_process.returncode}")
-                        # Restore file
-                        if os.path.exists(input_file) and not os.path.exists(output_file):
-                            os.rename(input_file, output_file)
-
-                except Exception as e:
-                    self.error_occurred.emit(f"Encoding process error: {e}")
-
+            # --- Post Processing (Transcoding) ---
+            should_transcode = self.codec and self.codec != "변환 없음" and self.codec != "None" and not self.audio_only
+            
+            if should_transcode and final_filename and os.path.exists(final_filename):
+                self.perform_transcode(final_filename, ffmpeg_path, encoding, startupinfo)
             else:
                 self.finished.emit()
-
+                
         except Exception as e:
-            self.error_occurred.emit(f"An error occurred: {str(e)}")
+            if self.is_running: # Only emit error if not cancelled
+                self.logger.exception("Error in start_download")
+                self.error_occurred.emit(f"An error occurred: {str(e)}")
         finally:
             self.is_running = False
+            self.process = None
+
+    def perform_transcode(self, final_filename, ffmpeg_path, encoding, startupinfo):
+        self.log_message.emit(f"Starting Post-Process: {self.codec} (Threads: {self.threads})")
+        self.progress_update.emit(0, "Encoding...", "Calculating...")
+
+        base, ext = os.path.splitext(final_filename)
+        input_file = f"{base}_raw{ext}"
+        try:
+            if os.path.exists(input_file):
+                os.remove(input_file)
+            os.rename(final_filename, input_file)
+            self.current_filename = input_file # Track temp file for cleanup
+        except OSError as e:
+            self.error_occurred.emit(f"File rename failed: {e}")
+            return
+
+        # Get Duration
+        duration_sec = 0
+        try:
+                probe_cmd = [ffmpeg_path, '-i', input_file]
+                probe_process = subprocess.run(
+                probe_cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                text=True, 
+                encoding=encoding,
+                errors='replace',
+                startupinfo=startupinfo
+            )
+                match = re.search(r'Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})', probe_process.stderr)
+                if match:
+                    h, m, s = match.groups()
+                    duration_sec = float(h)*3600 + float(m)*60 + float(s)
+        except Exception:
+            pass
+
+        # Build FFmpeg Command
+        ffmpeg_cmd = [ffmpeg_path, '-y']
+        
+        # Threads (Input Decoding - Helps feeding GPU)
+        if self.threads > 1:
+            ffmpeg_cmd.extend(['-threads', str(self.threads)])
+            
+        ffmpeg_cmd.extend(['-i', input_file])
+        
+        # Threads (Output Encoding - mostly for CPU encoders, but harmless for NVENC)
+        # Note: Some encoders verify thread count differently, but global -threads usually covers decoders.
+        # We add it again for the encoder if needed, but usually input is the bottleneck for NVENC.
+        # Let's keep it simple: Global threads is usually enough.
+        
+        # Map Codec & Preset
+        c_args = []
+        if "H264 (CPU)" in self.codec:
+            c_args = ['-c:v', 'libx264']
+            if "무손실" in self.preset: c_args.extend(['-crf', '0', '-preset', 'ultrafast'])
+            elif "최소 손실" in self.preset: c_args.extend(['-crf', '17', '-preset', 'slow'])
+            elif "최대 압축" in self.preset: c_args.extend(['-crf', '28', '-preset', 'veryslow'])
+            else: c_args.extend(['-crf', '23', '-preset', 'medium'])
+            
+        elif "NVENC" in self.codec:
+            c_args = ['-c:v', 'h264_nvenc']
+            if "무손실" in self.preset: c_args.extend(['-preset', 'p7', '-rc', 'constqp', '-qp', '0']) 
+            elif "최소 손실" in self.preset: c_args.extend(['-preset', 'p6', '-cq', '19', '-rc', 'vbr_hq'])
+            elif "최대 압축" in self.preset: c_args.extend(['-preset', 'p7', '-cq', '30', '-rc', 'vbr_hq'])
+            else: c_args.extend(['-preset', 'p4', '-b:v', '5M']) 
+            
+        elif "HEVC" in self.codec:
+            c_args = ['-c:v', 'libx265']
+            if "무손실" in self.preset: c_args.extend(['-x265-params', 'lossless=1'])
+            elif "최소 손실" in self.preset: c_args.extend(['-crf', '20', '-preset', 'slow'])
+            elif "최대 압축" in self.preset: c_args.extend(['-crf', '30', '-preset', 'veryslow'])
+            else: c_args.extend(['-crf', '26', '-preset', 'medium'])
+            
+        elif "VP9" in self.codec:
+            c_args = ['-c:v', 'libvpx-vp9']
+            if "무손실" in self.preset: c_args.extend(['-lossless', '1'])
+            elif "최소 손실" in self.preset: c_args.extend(['-crf', '15', '-b:v', '0'])
+            elif "최대 압축" in self.preset: c_args.extend(['-crf', '40', '-b:v', '0'])
+            else: c_args.extend(['-crf', '30', '-b:v', '0'])
+
+        ffmpeg_cmd.extend(c_args)
+        ffmpeg_cmd.extend(['-c:a', 'copy', final_filename])
+        
+        self.logger.debug(f"Encoding command: {' '.join(ffmpeg_cmd)}")
+
+        self.process = subprocess.Popen(
+            ffmpeg_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding=encoding,
+            errors='replace',
+            startupinfo=startupinfo
+        )
+        
+        while self.is_running:
+            line = self.process.stdout.readline()
+            if not line:
+                if self.process.poll() is not None:
+                    break
+                continue
+            
+            line = line.strip()
+            # Parse Progress
+            if duration_sec > 0 and "time=" in line:
+                match = re.search(r'time=(\d{2}):(\d{2}):(\d{2}\.\d{2})', line)
+                if match:
+                    h, m, s = match.groups()
+                    current_sec = float(h)*3600 + float(m)*60 + float(s)
+                    percent = (current_sec / duration_sec) * 100
+                    self.progress_update.emit(percent, "Encoding", "")
+
+        if self.process.returncode == 0:
+            self.log_message.emit("Encoding completed.")
+            self.progress_update.emit(100, "Done", "")
+            try: os.remove(input_file)
+            except: pass
+            self.finished.emit()
+        else:
+             if self.is_running:
+                self.error_occurred.emit(f"Encoding failed: {self.process.returncode}")
+                # Restore
+                if os.path.exists(input_file) and not os.path.exists(final_filename):
+                    os.rename(input_file, final_filename)
+
+    def parse_progress(self, line):
+        try:
+            parts = line.split()
+            percent_str = parts[1].replace('%','')
+            speed_str = parts[5]
+            eta_str = parts[7]
+            self.progress_update.emit(float(percent_str), speed_str, eta_str)
+        except:
+            pass
 
     def stop(self):
         self.is_running = False
+        self.log_message.emit("Stopping process...")
+        
+        # Kill Process
         if self.process:
             try:
-                self.process.terminate()
+                self.process.terminate() # Try soft kill
+                self.process.wait(timeout=2)
             except:
-                pass
+                try: self.process.kill() # Hard kill
+                except: pass
+        
+        # Cleanup
+        if self.current_filename:
+             base = os.path.splitext(self.current_filename)[0]
+             # Clean up .part, .ytdl, _raw files
+             cleanup_patterns = [
+                 f"{self.current_filename}.part",
+                 f"{self.current_filename}.ytdl",
+                 f"{base}.part",
+                 f"{base}.ytdl",
+                 f"{base}_raw*"
+             ]
+             
+             for pattern in cleanup_patterns:
+                 for f in glob.glob(pattern):
+                     try: os.remove(f); self.logger.debug(f"Deleted cleanup: {f}")
+                     except: pass
 
 class DownloaderThread(QThread):
     def __init__(self, downloader):

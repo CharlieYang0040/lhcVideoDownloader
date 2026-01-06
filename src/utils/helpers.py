@@ -1,5 +1,6 @@
 import os
 import sys
+import shutil
 
 def get_base_path():
     """ Get absolute path to resource, works for dev and for PyInstaller """
