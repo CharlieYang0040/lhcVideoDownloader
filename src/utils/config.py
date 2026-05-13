@@ -1,16 +1,16 @@
 import json
 import os
-import appdirs
+from src.utils.helpers import APP_NAME, APP_AUTHOR, get_default_download_path, get_user_data_path
 
 class ConfigManager:
     def __init__(self):
-        self.app_name = "LHCVideoDownloader"
-        self.app_author = "LHCinema"
-        self.config_dir = appdirs.user_data_dir(self.app_name, self.app_author)
+        self.app_name = APP_NAME
+        self.app_author = APP_AUTHOR
+        self.config_dir = get_user_data_path()
         self.config_file = os.path.join(self.config_dir, "config.json")
         
         self.defaults = {
-            "last_download_path": os.path.join(os.getcwd(), "downloads"),
+            "last_download_path": get_default_download_path(),
             "last_auth_method": "None", # "APP Login (Rec)", "Firefox", "File", "None"
             "cookie_file_path": "",
             "url_history": [],

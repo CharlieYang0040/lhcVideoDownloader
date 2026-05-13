@@ -10,7 +10,7 @@
 [Setup]
 ; NOTE: The value of AppId uniquely identifies this application. Do not use the same AppId value in installers for other applications.
 ; (To generate a new GUID, click Tools | Generate GUID inside the IDE.)
-AppId={{D5F1C62H-7721-4621-A3D2-E456789ABCDE}}
+AppId={{D5F1C62A-7721-4621-A3D2-E456789ABCDE}}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 ;AppVerName={#MyAppName} {#MyAppVersion}
@@ -24,7 +24,7 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=installer_output
 OutputBaseFilename=LHC_Setup
-SetupIconFile=d:\WORKDATA\lhcVideoDownloader\resources\icon.ico
+SetupIconFile=resources\icon.ico
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -38,7 +38,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 ; IMPORTANT: Make sure the Source path matches your actual dist output folder
-Source: "d:\WORKDATA\lhcVideoDownloader\dist\LHCVideoDownloader\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\LHCVideoDownloader\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]

@@ -180,6 +180,54 @@ class VideoDownloader(QObject):
         finally:
             downloader_type._yt_dlp_update_lock.release()
 
+    def resolve_output_path(self, filename):
+        filename = filename.strip().strip('"')
+        if not filename:
+            return None
+
+        if not os.path.isabs(filename):
+            filename = os.path.join(self.download_path, filename)
+        return os.path.normpath(filename)
+
+    def parse_output_filename(self, line):
+        quoted_patterns = (
+            r'Merging formats into\s+"([^"]+)"',
+            r'Destination:\s+"([^"]+)"',
+            r'Already downloaded:\s+"([^"]+)"',
+        )
+        for pattern in quoted_patterns:
+            match = re.search(pattern, line)
+            if match:
+                return self.resolve_output_path(match.group(1))
+
+        plain_patterns = (
+            r'Destination:\s+(.+)$',
+            r'Already downloaded:\s+(.+)$',
+            r'^\[download\]\s+(.+?)\s+has already been downloaded',
+        )
+        for pattern in plain_patterns:
+            match = re.search(pattern, line)
+            if match:
+                return self.resolve_output_path(match.group(1))
+
+        return None
+
+    @staticmethod
+    def parse_timestamp_seconds(value):
+        match = re.match(r'(\d+):(\d{2}):(\d{2}(?:\.\d+)?)', value)
+        if not match:
+            return None
+
+        h, m, s = match.groups()
+        return (float(h) * 3600) + (float(m) * 60) + float(s)
+
+    def emit_encoding_progress(self, current_sec, duration_sec):
+        if duration_sec <= 0:
+            return
+
+        percent = max(0, min((current_sec / duration_sec) * 100, 100))
+        self.progress_update.emit(percent, "Encoding", "")
+
     def start_download(self):
         self.is_running = True
         self.logger.debug(f"Starting download for URL: {self.url}")
@@ -192,6 +240,11 @@ class VideoDownloader(QObject):
         # Check dependencies
         if not yt_dlp_path or not os.path.exists(yt_dlp_path):
             self.error_occurred.emit("yt-dlp.exe not found.")
+            self.is_running = False
+            return
+
+        if not ffmpeg_path or not os.path.exists(ffmpeg_path):
+            self.error_occurred.emit("ffmpeg.exe not found. FFmpeg is required for merging, audio extraction, and encoding.")
             self.is_running = False
             return
 
@@ -327,16 +380,18 @@ class VideoDownloader(QObject):
                 # Parse
                 if '[download]' in line and '%' in line:
                     self.parse_progress(line)
-                elif 'Destination:' in line or 'Already downloaded:' in line or 'Merging formats into' in line:
-                     parts = line.split(':', 1)
-                     if len(parts) > 1:
-                         fname = parts[1].strip().strip('"')
-                         if not os.path.isabs(fname):
-                             fname = os.path.join(self.download_path, fname)
-                         final_filename = fname
-                         self.current_filename = fname
-                         self.log_message.emit(f"Target File: {final_filename}")
-                     self.log_message.emit(line)
+                elif (
+                    'Destination:' in line
+                    or 'Already downloaded:' in line
+                    or 'has already been downloaded' in line
+                    or 'Merging formats into' in line
+                ):
+                    parsed_filename = self.parse_output_filename(line)
+                    if parsed_filename:
+                        final_filename = parsed_filename
+                        self.current_filename = parsed_filename
+                        self.log_message.emit(f"Target File: {final_filename}")
+                    self.log_message.emit(line)
                 else:
                     self.log_message.emit(line)
 
@@ -361,7 +416,13 @@ class VideoDownloader(QObject):
             # --- Post Processing (Transcoding) ---
             should_transcode = self.codec and self.codec != "변환 없음" and self.codec != "None" and not self.audio_only
             
-            if should_transcode and final_filename and os.path.exists(final_filename):
+            if should_transcode:
+                if not final_filename:
+                    self.error_occurred.emit("Downloaded file name could not be determined. Encoding cannot start.")
+                    return
+                if not os.path.exists(final_filename):
+                    self.error_occurred.emit(f"Downloaded file not found for encoding: {final_filename}")
+                    return
                 self.perform_transcode(final_filename, ffmpeg_path, encoding, startupinfo)
             else:
                 self.finished.emit()
@@ -393,8 +454,8 @@ class VideoDownloader(QObject):
         # Get Duration
         duration_sec = 0
         try:
-                probe_cmd = [ffmpeg_path, '-i', input_file]
-                probe_process = subprocess.run(
+            probe_cmd = [ffmpeg_path, '-i', input_file]
+            probe_process = subprocess.run(
                 probe_cmd, 
                 stdout=subprocess.PIPE, 
                 stderr=subprocess.PIPE, 
@@ -403,15 +464,14 @@ class VideoDownloader(QObject):
                 errors='replace',
                 startupinfo=startupinfo
             )
-                match = re.search(r'Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})', probe_process.stderr)
-                if match:
-                    h, m, s = match.groups()
-                    duration_sec = float(h)*3600 + float(m)*60 + float(s)
+            match = re.search(r'Duration:\s*(\d+:\d{2}:\d{2}(?:\.\d+)?)', probe_process.stderr)
+            if match:
+                duration_sec = self.parse_timestamp_seconds(match.group(1)) or 0
         except Exception:
             pass
 
         # Build FFmpeg Command
-        ffmpeg_cmd = [ffmpeg_path, '-y']
+        ffmpeg_cmd = [ffmpeg_path, '-y', '-progress', 'pipe:1', '-nostats']
         
         # Threads (Input Decoding - Helps feeding GPU)
         if self.threads > 1:
@@ -477,14 +537,27 @@ class VideoDownloader(QObject):
                 continue
             
             line = line.strip()
-            # Parse Progress
-            if duration_sec > 0 and "time=" in line:
-                match = re.search(r'time=(\d{2}):(\d{2}):(\d{2}\.\d{2})', line)
+            self.logger.debug(f"[ffmpeg] {line}")
+
+            if duration_sec <= 0:
+                continue
+
+            if line.startswith('out_time_ms=') or line.startswith('out_time_us='):
+                try:
+                    current_sec = int(line.split('=', 1)[1]) / 1_000_000
+                    self.emit_encoding_progress(current_sec, duration_sec)
+                except ValueError:
+                    pass
+            elif line.startswith('out_time='):
+                current_sec = self.parse_timestamp_seconds(line.split('=', 1)[1])
+                if current_sec is not None:
+                    self.emit_encoding_progress(current_sec, duration_sec)
+            elif "time=" in line:
+                match = re.search(r'time=(\d+:\d{2}:\d{2}(?:\.\d+)?)', line)
                 if match:
-                    h, m, s = match.groups()
-                    current_sec = float(h)*3600 + float(m)*60 + float(s)
-                    percent = (current_sec / duration_sec) * 100
-                    self.progress_update.emit(percent, "Encoding", "")
+                    current_sec = self.parse_timestamp_seconds(match.group(1))
+                    if current_sec is not None:
+                        self.emit_encoding_progress(current_sec, duration_sec)
 
         if self.process.returncode == 0:
             self.log_message.emit("Encoding completed.")
@@ -501,11 +574,16 @@ class VideoDownloader(QObject):
 
     def parse_progress(self, line):
         try:
-            parts = line.split()
-            percent_str = parts[1].replace('%','')
-            speed_str = parts[5]
-            eta_str = parts[7]
-            self.progress_update.emit(float(percent_str), speed_str, eta_str)
+            percent_match = re.search(r'\[download\]\s+(\d+(?:\.\d+)?)%', line)
+            if not percent_match:
+                return
+
+            speed_match = re.search(r'\bat\s+([^\s]+/s)', line)
+            eta_match = re.search(r'\bETA\s+([^\s]+)', line)
+            percent = max(0, min(float(percent_match.group(1)), 100))
+            speed_str = speed_match.group(1) if speed_match else "-"
+            eta_str = eta_match.group(1) if eta_match else ""
+            self.progress_update.emit(percent, speed_str, eta_str)
         except:
             pass
 

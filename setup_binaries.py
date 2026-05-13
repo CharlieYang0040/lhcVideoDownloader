@@ -18,12 +18,15 @@ def setup_binaries():
     # Define exact expected directories inside `libs`
     ytdlp_dir = os.path.join(libs_dir, 'yt-dlp')
     ffmpeg_dir = os.path.join(libs_dir, 'ffmpeg')
+    deno_dir = os.path.join(libs_dir, 'deno')
     
     os.makedirs(ytdlp_dir, exist_ok=True)
     os.makedirs(ffmpeg_dir, exist_ok=True)
+    os.makedirs(deno_dir, exist_ok=True)
 
     ytdlp_path = os.path.join(ytdlp_dir, 'yt-dlp.exe')
     ffmpeg_path = os.path.join(ffmpeg_dir, 'ffmpeg.exe')
+    deno_path = os.path.join(deno_dir, 'deno.exe')
 
     # Download yt-dlp if it doesn't exist
     if not os.path.exists(ytdlp_path):
@@ -37,6 +40,21 @@ def setup_binaries():
         subprocess.run([ytdlp_path, "-U"])
     except Exception as e:
         print(f"Failed to update yt-dlp: {e}")
+
+    # Download Deno if it doesn't exist
+    if not os.path.exists(deno_path):
+        print("Downloading Deno JavaScript runtime...")
+        deno_zip_url = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"
+        deno_zip_path = os.path.join(libs_dir, 'deno.zip')
+        download_file(deno_zip_url, deno_zip_path)
+
+        print("Extracting Deno...")
+        with zipfile.ZipFile(deno_zip_path, 'r') as zip_ref:
+            zip_ref.extractall(deno_dir)
+        os.remove(deno_zip_path)
+        print("Deno setup completed.")
+    else:
+        print("deno.exe is already present.")
 
     # Download ffmpeg if it doesn't exist or needs update
     ffmpeg_needs_update = False
@@ -102,7 +120,7 @@ def setup_binaries():
          print("ffmpeg.exe is already present.")
 
 if __name__ == "__main__":
-    print("Checking external binaries setup...")
+    print("Checking external binaries setup (yt-dlp, ffmpeg, deno)...")
     try:
         setup_binaries()
         print("Binary setup verified.")

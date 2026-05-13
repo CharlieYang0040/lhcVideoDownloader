@@ -135,6 +135,16 @@ class TaskWidget(QWidget):
         self.status_label.setStyleSheet("color: #4caf50;")
         self.thread.start()
 
+    def is_active(self):
+        return self.downloader.is_running or self.thread.isRunning()
+
+    def stop_for_shutdown(self):
+        if self.downloader.is_running:
+            self.downloader.stop()
+        if self.thread.isRunning():
+            self.thread.quit()
+            self.thread.wait(3000)
+
     @Slot(float, str, str)
     def on_progress(self, percent, speed, eta):
         self.progress_bar.setValue(int(percent))

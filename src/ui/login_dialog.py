@@ -3,6 +3,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEngineCookieStore
 from PySide6.QtCore import QUrl, Slot, QDateTime
 import os
+from src.utils.helpers import get_cookie_file_path
 
 class LoginDialog(QDialog):
     def __init__(self, parent=None):
@@ -65,11 +66,10 @@ class LoginDialog(QDialog):
 
     def finalize_save(self):
         # Format to Netscape
-        cookie_dir = os.path.abspath("libs/cookies")
+        cookie_file_path = get_cookie_file_path()
+        cookie_dir = os.path.dirname(cookie_file_path)
         if not os.path.exists(cookie_dir):
             os.makedirs(cookie_dir)
-            
-        cookie_file_path = os.path.join(cookie_dir, "auth_cookies.txt")
         
         try:
             with open(cookie_file_path, "w", encoding="utf-8") as f:

@@ -8,6 +8,7 @@ from PySide6.QtGui import QDesktopServices
 from src.ui.task_widget import TaskWidget
 from src.ui.login_dialog import LoginDialog
 from src.utils.config import ConfigManager
+from src.utils.helpers import find_cookie_file_path
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -253,6 +254,28 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.task_list)
 
     def closeEvent(self, event):
+        running_tasks = []
+        for i in range(self.task_list.count()):
+            item = self.task_list.item(i)
+            task_widget = self.task_list.itemWidget(item)
+            if task_widget and task_widget.is_active():
+                running_tasks.append(task_widget)
+
+        if running_tasks:
+            reply = QMessageBox.question(
+                self,
+                "작업 진행 중",
+                "진행 중인 다운로드가 있습니다.\n종료하면 실행 중인 작업이 취소됩니다. 종료하시겠습니까?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                event.ignore()
+                return
+
+            for task_widget in running_tasks:
+                task_widget.stop_for_shutdown()
+
         # Save settings on exit
         self.config.set("last_download_path", self.path_input.text())
         self.config.set("last_auth_method", self.auth_type_combo.currentText())
@@ -355,7 +378,7 @@ class MainWindow(QMainWindow):
         auth_type = self.auth_type_combo.currentText()
         
         if auth_type == "앱 내 로그인 (권장)":
-            cookie_path = os.path.abspath("libs/cookies/auth_cookies.txt")
+            cookie_path = find_cookie_file_path()
             if os.path.exists(cookie_path):
                 cookies = f"file:{cookie_path}"
             else:
@@ -365,6 +388,7 @@ class MainWindow(QMainWindow):
                                      QMessageBox.Yes | QMessageBox.No)
                 if reply == QMessageBox.Yes:
                     self.open_login_dialog()
+                    cookie_path = find_cookie_file_path()
                     if os.path.exists(cookie_path):
                         cookies = f"file:{cookie_path}"
                     else:
