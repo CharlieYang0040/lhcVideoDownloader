@@ -36,10 +36,8 @@ class ConfigManager:
             return self.defaults.copy()
 
     def save_config(self):
-        if not os.path.exists(self.config_dir):
-            os.makedirs(self.config_dir)
-            
         try:
+            os.makedirs(self.config_dir, exist_ok=True)
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(self.config, f, indent=4, ensure_ascii=False)
         except Exception as e:

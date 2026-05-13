@@ -24,7 +24,8 @@ def get_app_path():
 
 def get_user_data_path(*parts):
     """Get a user-writable app data path."""
-    return os.path.join(appdirs.user_data_dir(APP_NAME, APP_AUTHOR), *parts)
+    base_dir = os.environ.get("LHCVD_USER_DATA_DIR") or appdirs.user_data_dir(APP_NAME, APP_AUTHOR)
+    return os.path.join(base_dir, *parts)
 
 def get_default_download_path():
     downloads_dir = os.path.join(os.path.expanduser("~"), "Downloads")

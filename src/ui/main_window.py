@@ -1,12 +1,14 @@
 import os
 import logging
-from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QPushButton, QLineEdit, QListWidget, QListWidgetItem,
-                               QComboBox, QLabel, QFileDialog, QGroupBox, QMessageBox, QToolTip, QApplication, QCheckBox, QSpinBox)
-from PySide6.QtCore import Slot, QSize, QUrl
+                               QComboBox, QLabel, QFileDialog, QMessageBox, QApplication,
+                               QCheckBox, QSpinBox, QFrame, QGridLayout, QToolButton, QStyle)
+from PySide6.QtCore import Slot, QSize, QUrl, Qt
 from PySide6.QtGui import QDesktopServices
 from src.ui.task_widget import TaskWidget
 from src.ui.login_dialog import LoginDialog
+from src.ui.theme import APP_STYLESHEET
 from src.utils.config import ConfigManager
 from src.utils.helpers import find_cookie_file_path
 
@@ -17,57 +19,42 @@ class MainWindow(QMainWindow):
         self.logger.debug("Initializing MainWindow...")
         self.setWindowTitle("LHC Video Downloader")
         self.resize(1000, 720)
-        
+
         # Load Config
         self.config = ConfigManager()
-        
-        # Style
-        self.setStyleSheet("""
-            QMainWindow { background-color: #2b2b2b; color: #ffffff; }
-            QLabel { color: #cccccc; font-weight: bold; font-size: 14px; }
-            QLineEdit, QComboBox { 
-                padding: 8px; border-radius: 5px; border: 1px solid #555; 
-                background-color: #333; color: white; selection-background-color: #555;
-            }
-            QComboBox::drop-down { border: none; }
-            QComboBox::down-arrow { image: none; border-left: 1px solid #555; }
-            QPushButton {
-                background-color: #3f51b5; color: white;
-                border: none; padding: 8px 16px; border-radius: 5px;
-                font-weight: bold; font-size: 13px;
-            }
-            QPushButton:hover { background-color: #5c6bc0; }
-            QPushButton#ActionBtn { background-color: #2e7d32; }
-            QPushButton#ActionBtn:hover { background-color: #388e3c; }
-            QPushButton#SmallBtn { padding: 5px; background-color: #616161; }
-            QPushButton#SmallBtn:hover { background-color: #757575; }
-            QGroupBox { 
-                border: 1px solid #444; border-radius: 5px; 
-                margin-top: 20px; font-weight: bold; color: #eee;
-            }
-            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
-            QListWidget { border: 1px solid #444; border-radius: 5px; background-color: #1e1e1e; }
-        """)
+
+        self.setStyleSheet(APP_STYLESHEET)
 
         # Main Layout
         central_widget = QWidget()
+        central_widget.setObjectName("Root")
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setSpacing(20)
-        main_layout.setContentsMargins(25, 25, 25, 25)
+        main_layout.setSpacing(14)
+        main_layout.setContentsMargins(18, 18, 18, 18)
 
-        # 1. Input Area
-        input_group = QGroupBox("새로운 다운로드 추가 (Add New Download)")
-        input_layout = QHBoxLayout(input_group)
+        header_layout = QHBoxLayout()
+        title_label = QLabel("LHC Video Downloader")
+        title_label.setObjectName("AppTitle")
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+        main_layout.addLayout(header_layout)
+
+        # 1. Command Area
+        input_panel = QFrame()
+        input_panel.setObjectName("Panel")
+        input_layout = QVBoxLayout(input_panel)
+        input_layout.setContentsMargins(14, 12, 14, 14)
         input_layout.setSpacing(10)
-        
+        input_layout.addWidget(self.section_label("Download"))
+
         # URL History Combo
         self.url_combo = QComboBox()
         self.url_combo.setEditable(True)
-        self.url_combo.setPlaceholderText("여기에 YouTube 또는 Vimeo 링크를 붙여넣으세요...")
+        self.url_combo.setPlaceholderText("URL 입력")
         self.url_combo.addItems(self.config.get("url_history"))
         self.url_combo.setCurrentIndex(-1)
-        self.url_combo.lineEdit().setPlaceholderText("여기에 YouTube 또는 Vimeo 링크를 붙여넣으세요...")
+        self.url_combo.lineEdit().setPlaceholderText("URL 입력")
         self.url_combo.setToolTip(
             "지원하는 사이트:\n"
             "- YouTube (영상, 재생목록, 채널)\n"
@@ -75,62 +62,70 @@ class MainWindow(QMainWindow):
             "- Facebook, Instagram, TikTok\n"
             "- SoundCloud, Mixcloud 등 1000+ 사이트 지원"
         )
-        
+
         self.paste_btn = QPushButton("붙여넣기")
+        self.paste_btn.setObjectName("SecondaryButton")
         self.paste_btn.setToolTip("클립보드에서 주소를 가져옵니다.")
         self.paste_btn.clicked.connect(self.paste_url)
-        
-        self.add_btn = QPushButton("다운로드 시작")
+
+        self.add_btn = QPushButton("다운로드")
         self.add_btn.setObjectName("ActionBtn")
         self.add_btn.setToolTip("목록에 작업을 추가하고 다운로드를 시작합니다.")
         self.add_btn.clicked.connect(self.add_task)
 
-        input_layout.addWidget(self.url_combo, 1) # Stretch factor
-        input_layout.addWidget(self.paste_btn)
-        input_layout.addWidget(self.add_btn)
-        
-        main_layout.addWidget(input_group)
+        command_row = QHBoxLayout()
+        command_row.setSpacing(8)
+        command_row.addWidget(self.url_combo, 1)
+        command_row.addWidget(self.paste_btn)
+        command_row.addWidget(self.add_btn)
+        input_layout.addLayout(command_row)
+
+        main_layout.addWidget(input_panel)
 
         # 2. Options Area
-        opts_group = QGroupBox("설정 (Options)")
-        opts_layout = QHBoxLayout(opts_group)
-        opts_layout.setSpacing(15)
-        
+        opts_panel = QFrame()
+        opts_panel.setObjectName("Panel")
+        opts_layout = QVBoxLayout(opts_panel)
+        opts_layout.setContentsMargins(14, 12, 14, 14)
+        opts_layout.setSpacing(10)
+        opts_layout.addWidget(self.section_label("Options"))
+
         # Path
-        path_layout = QVBoxLayout()
         self.path_input = QLineEdit()
         self.path_input.setText(self.config.get("last_download_path"))
         self.path_input.setToolTip("파일이 저장될 폴더 경로입니다.")
-        
-        self.browse_btn = QPushButton("...")
-        self.browse_btn.setObjectName("SmallBtn")
-        self.browse_btn.setFixedWidth(35)
+
+        self.browse_btn = QToolButton()
+        self.browse_btn.setObjectName("IconButton")
+        self.browse_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
+        self.browse_btn.setIconSize(QSize(16, 16))
         self.browse_btn.setToolTip("저장 경로를 변경합니다.")
         self.browse_btn.clicked.connect(self.browse_folder)
-        
-        self.open_folder_btn = QPushButton("📂")
-        self.open_folder_btn.setObjectName("SmallBtn")
-        self.open_folder_btn.setFixedWidth(35)
+
+        self.open_folder_btn = QToolButton()
+        self.open_folder_btn.setObjectName("IconButton")
+        self.open_folder_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
+        self.open_folder_btn.setIconSize(QSize(16, 16))
         self.open_folder_btn.setToolTip("현재 저장 폴더를 엽니다.")
         self.open_folder_btn.clicked.connect(self.open_download_folder)
 
         # Format combo expanded
         self.format_combo = QComboBox()
         self.format_combo.addItems([
-            "최고 화질 (MP4)", 
-            "최고 화질 (MKV)", 
+            "최고 화질 (MP4)",
+            "최고 화질 (MKV)",
             "최고 화질 (WebM)",
             "오디오만 (MP3)",
             "오디오만 (WAV)"
         ])
-        
+
         self.format_combo.setCurrentIndex(self.config.get("format_index"))
         self.format_combo.setToolTip("다운로드할 형식을 선택합니다.")
-        
+
         # Auth
         self.auth_type_combo = QComboBox()
         self.auth_type_combo.addItems(["앱 내 로그인 (권장)", "Firefox", "파일 (Cookies.txt)", "인증 안 함"])
-        
+
         # Restore Auth
         saved_auth = self.config.get("last_auth_method")
         # Default to "인증 안 함" (No Auth) if not set
@@ -145,28 +140,29 @@ class MainWindow(QMainWindow):
 
         self.auth_type_combo.setToolTip("연령 제한 영상을 위한 인증 방식입니다.\n'앱 내 로그인'을 추천합니다.")
         self.auth_type_combo.currentIndexChanged.connect(self.toggle_auth_input)
-        
+
         self.auth_input = QWidget()
         self.auth_input_layout = QHBoxLayout(self.auth_input)
         self.auth_input_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         # --- Auth Widgets ---
         self.login_btn = QPushButton("로그인 (Log In)")
         self.login_btn.setToolTip("유튜브 로그인 창을 엽니다.")
         self.login_btn.clicked.connect(self.open_login_dialog)
-        
+
         self.firefox_info = QLabel("(자동 감지)")
-        
+
         self.cookie_file_edit = QLineEdit()
         self.cookie_file_edit.setPlaceholderText("cookies.txt 선택...")
         self.cookie_file_edit.setText(self.config.get("cookie_file_path"))
-        self.cookie_file_btn = QPushButton("...")
-        self.cookie_file_btn.setObjectName("SmallBtn")
-        self.cookie_file_btn.setFixedWidth(30)
+        self.cookie_file_btn = QToolButton()
+        self.cookie_file_btn.setObjectName("IconButton")
+        self.cookie_file_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon))
+        self.cookie_file_btn.setIconSize(QSize(16, 16))
         self.cookie_file_btn.clicked.connect(self.browse_cookie_file)
-        
+
         self.toggle_auth_input() # Refresh auth UI
-        
+
         # Encoding Codec
         self.codec_combo = QComboBox()
         self.codec_combo.addItems(["변환 없음", "H264 (CPU)", "NVENC H264 (GPU)", "HEVC (H265)", "VP9"])
@@ -175,7 +171,7 @@ class MainWindow(QMainWindow):
             idx = self.codec_combo.findText(saved_codec)
             if idx >= 0: self.codec_combo.setCurrentIndex(idx)
         self.codec_combo.setToolTip("재인코딩할 코덱을 선택합니다.")
-        
+
         # Encoding Preset
         self.preset_combo = QComboBox()
         self.preset_combo.addItems(["기본 (Default)", "무손실 (Lossless)", "최소 손실 (High Quality)", "최대 압축 (Small Size)"])
@@ -186,72 +182,98 @@ class MainWindow(QMainWindow):
         self.preset_combo.setToolTip("선택한 코덱에 적용할 화질/압축 프리셋입니다.")
 
         # Layout Assembly
-        # Using VBox inside HBox for labelled fields? No, simpler flow
-        
-        path_group = QVBoxLayout()
-        path_group.addWidget(QLabel("저장 경로 (Save Path):"))
+        basic_grid = QGridLayout()
+        basic_grid.setHorizontalSpacing(10)
+        basic_grid.setVerticalSpacing(8)
+
         path_row = QHBoxLayout()
+        path_row.setSpacing(6)
         path_row.addWidget(self.path_input)
         path_row.addWidget(self.browse_btn)
         path_row.addWidget(self.open_folder_btn)
-        path_group.addLayout(path_row)
-        
-        opts_layout.addLayout(path_group, 2) # Give path more space
 
-        # Row 2: Settings (Grid-like)
-        settings_group = QVBoxLayout()
-        r1 = QHBoxLayout()
-        r1.addWidget(QLabel("형식:"))
-        r1.addWidget(self.format_combo)
-        r1.addWidget(QLabel("인증:"))
-        r1.addWidget(self.auth_type_combo)
-        r1.addWidget(self.auth_input)
-        
-        r2 = QHBoxLayout()
-        r2.addWidget(QLabel("코덱:"))
-        r2.addWidget(self.codec_combo)
-        r2.addWidget(QLabel("품질:"))
-        r2.addWidget(self.preset_combo)
-        
-        settings_group.addLayout(r1)
-        settings_group.addLayout(r2)
+        basic_grid.addWidget(self.field_label("저장 경로"), 0, 0)
+        basic_grid.addLayout(path_row, 0, 1, 1, 5)
+        basic_grid.addWidget(self.field_label("형식"), 1, 0)
+        basic_grid.addWidget(self.format_combo, 1, 1)
+        basic_grid.addWidget(self.field_label("인증"), 1, 2)
+        basic_grid.addWidget(self.auth_type_combo, 1, 3)
+        basic_grid.addWidget(self.auth_input, 1, 4, 1, 2)
+        basic_grid.setColumnStretch(1, 2)
+        basic_grid.setColumnStretch(3, 2)
+        basic_grid.setColumnStretch(5, 1)
+        opts_layout.addLayout(basic_grid)
 
-        # Row 3: Advanced Options
-        r3 = QHBoxLayout()
+        self.advanced_toggle = QToolButton()
+        self.advanced_toggle.setObjectName("AdvancedToggle")
+        self.advanced_toggle.setText("Advanced")
+        self.advanced_toggle.setCheckable(True)
+        self.advanced_toggle.setChecked(False)
+        self.advanced_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.advanced_toggle.setArrowType(Qt.RightArrow)
+        self.advanced_toggle.toggled.connect(self.toggle_advanced_options)
+        opts_layout.addWidget(self.advanced_toggle, alignment=Qt.AlignLeft)
+
+        self.advanced_frame = QFrame()
+        self.advanced_frame.setObjectName("AdvancedPanel")
+        advanced_layout = QGridLayout(self.advanced_frame)
+        advanced_layout.setContentsMargins(10, 10, 10, 10)
+        advanced_layout.setHorizontalSpacing(10)
+        advanced_layout.setVerticalSpacing(8)
         self.overwrite_check = QCheckBox("덮어쓰기 (Overwrite)")
         self.overwrite_check.setChecked(False)
         self.overwrite_check.setToolTip("체크 시 이미 존재하는 파일을 덮어씁니다.\n해제 시 건너뜁니다.")
-        
+
         self.threads_spin = QSpinBox()
         self.threads_spin.setRange(0, 32)
         self.threads_spin.setValue(0) # Default 0 (Auto)
         self.threads_spin.setSuffix(" 개(0=Auto)")
         self.threads_spin.setToolTip("인코딩 시 사용할 CPU 스레드 개수입니다. (0=자동)")
-        
+
         self.fragments_spin = QSpinBox()
         self.fragments_spin.setRange(1, 32)
         self.fragments_spin.setValue(5)
         self.fragments_spin.setSuffix(" 개")
         self.fragments_spin.setToolTip("다운로드 시 동시에 받을 조각 개수입니다. (기본 5)")
-        
-        r3.addWidget(self.overwrite_check)
-        r3.addWidget(QLabel("인코딩 스레드:"))
-        r3.addWidget(self.threads_spin)
-        r3.addWidget(QLabel("다운로드 분할:"))
-        r3.addWidget(self.fragments_spin)
-        
-        settings_group.addLayout(r3)
-        
-        opts_layout.addLayout(settings_group, 3)
 
-        main_layout.addWidget(opts_group)
+        advanced_layout.addWidget(self.field_label("코덱"), 0, 0)
+        advanced_layout.addWidget(self.codec_combo, 0, 1)
+        advanced_layout.addWidget(self.field_label("품질"), 0, 2)
+        advanced_layout.addWidget(self.preset_combo, 0, 3)
+        advanced_layout.addWidget(self.overwrite_check, 1, 0)
+        advanced_layout.addWidget(self.field_label("인코딩 스레드"), 1, 1)
+        advanced_layout.addWidget(self.threads_spin, 1, 2)
+        advanced_layout.addWidget(self.field_label("다운로드 분할"), 1, 3)
+        advanced_layout.addWidget(self.fragments_spin, 1, 4)
+        advanced_layout.setColumnStretch(1, 2)
+        advanced_layout.setColumnStretch(3, 2)
+        self.advanced_frame.setVisible(False)
+        opts_layout.addWidget(self.advanced_frame)
+
+        main_layout.addWidget(opts_panel)
 
         # 3. Task List
-        task_label = QLabel("작업 목록 (Tasks)")
+        task_label = self.section_label("Queue")
         main_layout.addWidget(task_label)
-        
+
         self.task_list = QListWidget()
+        self.task_list.setSpacing(6)
         main_layout.addWidget(self.task_list)
+
+    def section_label(self, text):
+        label = QLabel(text)
+        label.setObjectName("SectionTitle")
+        return label
+
+    def field_label(self, text):
+        label = QLabel(text)
+        label.setObjectName("MutedLabel")
+        return label
+
+    @Slot(bool)
+    def toggle_advanced_options(self, checked):
+        self.advanced_frame.setVisible(checked)
+        self.advanced_toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
 
     def closeEvent(self, event):
         running_tasks = []
@@ -302,9 +324,9 @@ class MainWindow(QMainWindow):
             widget = item.widget()
             if widget:
                 widget.setParent(None)
-        
+
         auth_type = self.auth_type_combo.currentText()
-        
+
         if auth_type == "앱 내 로그인 (권장)":
             self.auth_input_layout.addWidget(self.login_btn)
         elif auth_type == "Firefox":
@@ -343,7 +365,7 @@ class MainWindow(QMainWindow):
         self.logger.debug("add_task triggered")
         url = self.url_combo.currentText().strip()
         path = self.path_input.text().strip()
-        
+
         if not url:
             QMessageBox.warning(self, "입력 오류", "URL을 입력해주세요.")
             return
@@ -365,7 +387,7 @@ class MainWindow(QMainWindow):
         # Get Options
         format_text = self.format_combo.currentText()
         audio_only = "오디오만" in format_text
-        
+
         target_ext = None
         if "MKV" in format_text: target_ext = "mkv"
         elif "WebM" in format_text: target_ext = "webm"
@@ -376,13 +398,13 @@ class MainWindow(QMainWindow):
         # Auth Logic
         cookies = None
         auth_type = self.auth_type_combo.currentText()
-        
+
         if auth_type == "앱 내 로그인 (권장)":
             cookie_path = find_cookie_file_path()
             if os.path.exists(cookie_path):
                 cookies = f"file:{cookie_path}"
             else:
-                reply = QMessageBox.question(self, "로그인 필요", 
+                reply = QMessageBox.question(self, "로그인 필요",
                                      "앱 내 로그인을 선택하셨지만 저장된 쿠키가 없습니다.\n"
                                      "지금 로그인하시겠습니까?",
                                      QMessageBox.Yes | QMessageBox.No)
@@ -392,13 +414,13 @@ class MainWindow(QMainWindow):
                     if os.path.exists(cookie_path):
                         cookies = f"file:{cookie_path}"
                     else:
-                        return 
+                        return
                 else:
-                    return 
-                    
+                    return
+
         elif auth_type == "Firefox":
             cookies = "browser:firefox"
-            
+
         elif auth_type == "파일 (Cookies.txt)":
             cookie_file = self.cookie_file_edit.text().strip()
             if cookie_file:
@@ -406,7 +428,7 @@ class MainWindow(QMainWindow):
 
         codec = self.codec_combo.currentText()
         preset = self.preset_combo.currentText()
-        
+
         overwrite = self.overwrite_check.isChecked()
         threads = self.threads_spin.value()
         fragments = self.fragments_spin.value()
@@ -414,17 +436,17 @@ class MainWindow(QMainWindow):
         # Create Task Widget
         task_widget = TaskWidget(url, path, audio_only, cookies, codec, preset, target_ext, overwrite, threads, fragments)
         task_widget.removed.connect(self.remove_task)
-        
+
         # Add to List
         item = QListWidgetItem(self.task_list)
         item.setSizeHint(task_widget.sizeHint())
-        
+
         self.task_list.addItem(item)
         self.task_list.setItemWidget(item, task_widget)
-        
+
         # Start
         task_widget.start()
-        
+
         # Clear Input? No, keep it in combo
         # self.url_input.clear()
 
