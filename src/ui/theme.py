@@ -118,6 +118,18 @@ QSpinBox:focus {
     border-color: #2e9cdc;
 }
 
+QSpinBox::up-button,
+QSpinBox::down-button {
+    width: 18px;
+    background-color: #151a21;
+    border-left: 1px solid #2b333e;
+}
+
+QSpinBox::up-button:hover,
+QSpinBox::down-button:hover {
+    background-color: #202833;
+}
+
 QComboBox::drop-down {
     border: none;
     width: 24px;
@@ -176,6 +188,35 @@ QPushButton#DangerButton {
 }
 
 QPushButton#DangerButton:hover {
+    background-color: #6a2e31;
+}
+
+QPushButton#QueueButton,
+QPushButton#QueueDangerButton {
+    min-height: 22px;
+    max-height: 24px;
+    padding: 2px 9px;
+    font-size: 12px;
+}
+
+QPushButton#QueueButton {
+    background-color: #20262e;
+    border-color: #343c48;
+    color: #d8dee6;
+}
+
+QPushButton#QueueButton:hover {
+    background-color: #2a313b;
+    border-color: #46515f;
+}
+
+QPushButton#QueueDangerButton {
+    background-color: #4a2325;
+    border-color: #8a3b3d;
+    color: #ffd6d2;
+}
+
+QPushButton#QueueDangerButton:hover {
     background-color: #6a2e31;
 }
 

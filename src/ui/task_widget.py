@@ -91,15 +91,17 @@ class TaskWidget(QWidget):
         self.metrics_label.setObjectName("MetricsLabel")
         
         self.log_btn = QPushButton("로그")
-        self.log_btn.setObjectName("SecondaryButton")
-        self.log_btn.setMinimumSize(58, 28)
+        self.log_btn.setObjectName("QueueButton")
+        self.log_btn.setMinimumSize(50, 22)
+        self.log_btn.setMaximumHeight(24)
         self.log_btn.setCursor(Qt.PointingHandCursor)
         self.log_btn.setToolTip("상세 로그를 확인합니다.")
         self.log_btn.clicked.connect(self.show_logs)
-        
+
         self.cancel_btn = QPushButton("취소")
-        self.cancel_btn.setObjectName("DangerButton")
-        self.cancel_btn.setMinimumSize(58, 28)
+        self.cancel_btn.setObjectName("QueueDangerButton")
+        self.cancel_btn.setMinimumSize(50, 22)
+        self.cancel_btn.setMaximumHeight(24)
         self.cancel_btn.setCursor(Qt.PointingHandCursor)
         self.cancel_btn.setToolTip("작업을 취소합니다.")
         self.cancel_btn.clicked.connect(self.cancel_download)
@@ -182,7 +184,7 @@ class TaskWidget(QWidget):
         self.progress_bar.setValue(100)
         self.thread.quit()
         self.cancel_btn.setText("삭제") # Change cancel to remove
-        self.cancel_btn.setObjectName("SecondaryButton")
+        self.cancel_btn.setObjectName("QueueButton")
         refresh_style(self.cancel_btn)
         self.cancel_btn.setToolTip("목록에서 제거합니다.")
 

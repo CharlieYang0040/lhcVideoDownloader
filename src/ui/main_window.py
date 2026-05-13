@@ -1,4 +1,4 @@
-import os
+﻿import os
 import logging
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QPushButton, QLineEdit, QListWidget, QListWidgetItem,
@@ -144,13 +144,16 @@ class MainWindow(QMainWindow):
         self.auth_input = QWidget()
         self.auth_input_layout = QHBoxLayout(self.auth_input)
         self.auth_input_layout.setContentsMargins(0, 0, 0, 0)
+        self.auth_input_layout.setSpacing(6)
 
         # --- Auth Widgets ---
         self.login_btn = QPushButton("로그인 (Log In)")
+        self.login_btn.setObjectName("SecondaryButton")
         self.login_btn.setToolTip("유튜브 로그인 창을 엽니다.")
         self.login_btn.clicked.connect(self.open_login_dialog)
 
         self.firefox_info = QLabel("(자동 감지)")
+        self.firefox_info.setObjectName("MutedLabel")
 
         self.cookie_file_edit = QLineEdit()
         self.cookie_file_edit.setPlaceholderText("cookies.txt 선택...")
@@ -170,7 +173,7 @@ class MainWindow(QMainWindow):
         if saved_codec:
             idx = self.codec_combo.findText(saved_codec)
             if idx >= 0: self.codec_combo.setCurrentIndex(idx)
-        self.codec_combo.setToolTip("재인코딩할 코덱을 선택합니다.")
+        self.codec_combo.setToolTip("시간이 오래 걸릴 수 있으니 재생에 문제가 있을 경우 사용해주세요.")
 
         # Encoding Preset
         self.preset_combo = QComboBox()
@@ -183,25 +186,31 @@ class MainWindow(QMainWindow):
 
         # Layout Assembly
         basic_grid = QGridLayout()
-        basic_grid.setHorizontalSpacing(10)
-        basic_grid.setVerticalSpacing(8)
+        basic_grid.setHorizontalSpacing(12)
+        basic_grid.setVerticalSpacing(10)
 
+        path_widget = QWidget()
         path_row = QHBoxLayout()
+        path_row.setContentsMargins(0, 0, 0, 0)
         path_row.setSpacing(6)
         path_row.addWidget(self.path_input)
         path_row.addWidget(self.browse_btn)
         path_row.addWidget(self.open_folder_btn)
+        path_widget.setLayout(path_row)
 
-        basic_grid.addWidget(self.field_label("저장 경로"), 0, 0)
-        basic_grid.addLayout(path_row, 0, 1, 1, 5)
-        basic_grid.addWidget(self.field_label("형식"), 1, 0)
-        basic_grid.addWidget(self.format_combo, 1, 1)
-        basic_grid.addWidget(self.field_label("인증"), 1, 2)
-        basic_grid.addWidget(self.auth_type_combo, 1, 3)
-        basic_grid.addWidget(self.auth_input, 1, 4, 1, 2)
-        basic_grid.setColumnStretch(1, 2)
-        basic_grid.setColumnStretch(3, 2)
-        basic_grid.setColumnStretch(5, 1)
+        self.format_combo.setMinimumWidth(190)
+        self.format_combo.setMaximumWidth(240)
+        self.auth_type_combo.setMinimumWidth(180)
+        self.auth_type_combo.setMaximumWidth(230)
+        self.codec_combo.setMinimumWidth(180)
+        self.codec_combo.setMaximumWidth(230)
+        self.preset_combo.setMinimumWidth(220)
+        self.preset_combo.setMaximumWidth(280)
+
+        basic_grid.addWidget(self.field_block("저장 경로", path_widget), 0, 0, 1, 3)
+        basic_grid.addWidget(self.field_block("형식", self.format_combo), 0, 3)
+        basic_grid.setColumnStretch(0, 4)
+        basic_grid.setColumnStretch(3, 1)
         opts_layout.addLayout(basic_grid)
 
         self.advanced_toggle = QToolButton()
@@ -218,8 +227,8 @@ class MainWindow(QMainWindow):
         self.advanced_frame.setObjectName("AdvancedPanel")
         advanced_layout = QGridLayout(self.advanced_frame)
         advanced_layout.setContentsMargins(10, 10, 10, 10)
-        advanced_layout.setHorizontalSpacing(10)
-        advanced_layout.setVerticalSpacing(8)
+        advanced_layout.setHorizontalSpacing(12)
+        advanced_layout.setVerticalSpacing(10)
         self.overwrite_check = QCheckBox("덮어쓰기 (Overwrite)")
         self.overwrite_check.setChecked(False)
         self.overwrite_check.setToolTip("체크 시 이미 존재하는 파일을 덮어씁니다.\n해제 시 건너뜁니다.")
@@ -228,25 +237,29 @@ class MainWindow(QMainWindow):
         self.threads_spin.setRange(0, 32)
         self.threads_spin.setValue(0) # Default 0 (Auto)
         self.threads_spin.setSuffix(" 개(0=Auto)")
+        self.threads_spin.setMinimumWidth(120)
+        self.threads_spin.setMaximumWidth(150)
         self.threads_spin.setToolTip("인코딩 시 사용할 CPU 스레드 개수입니다. (0=자동)")
 
         self.fragments_spin = QSpinBox()
         self.fragments_spin.setRange(1, 32)
         self.fragments_spin.setValue(5)
         self.fragments_spin.setSuffix(" 개")
+        self.fragments_spin.setMinimumWidth(110)
+        self.fragments_spin.setMaximumWidth(140)
         self.fragments_spin.setToolTip("다운로드 시 동시에 받을 조각 개수입니다. (기본 5)")
 
-        advanced_layout.addWidget(self.field_label("코덱"), 0, 0)
-        advanced_layout.addWidget(self.codec_combo, 0, 1)
-        advanced_layout.addWidget(self.field_label("품질"), 0, 2)
-        advanced_layout.addWidget(self.preset_combo, 0, 3)
-        advanced_layout.addWidget(self.overwrite_check, 1, 0)
-        advanced_layout.addWidget(self.field_label("인코딩 스레드"), 1, 1)
-        advanced_layout.addWidget(self.threads_spin, 1, 2)
-        advanced_layout.addWidget(self.field_label("다운로드 분할"), 1, 3)
-        advanced_layout.addWidget(self.fragments_spin, 1, 4)
-        advanced_layout.setColumnStretch(1, 2)
-        advanced_layout.setColumnStretch(3, 2)
+        advanced_layout.addWidget(self.field_block("인증", self.auth_type_combo), 0, 0)
+        advanced_layout.addWidget(self.field_block("인증 옵션", self.auth_input), 0, 1)
+        advanced_layout.addWidget(self.field_block("추가 인코딩 코덱", self.codec_combo), 0, 2)
+        advanced_layout.addWidget(self.field_block("품질", self.preset_combo), 0, 3)
+        advanced_layout.addWidget(self.field_block("파일 처리", self.overwrite_check), 1, 0)
+        advanced_layout.addWidget(self.field_block("인코딩 스레드", self.threads_spin), 1, 1)
+        advanced_layout.addWidget(self.field_block("다운로드 분할", self.fragments_spin), 1, 2)
+        advanced_layout.setColumnStretch(0, 0)
+        advanced_layout.setColumnStretch(1, 1)
+        advanced_layout.setColumnStretch(2, 0)
+        advanced_layout.setColumnStretch(3, 0)
         self.advanced_frame.setVisible(False)
         opts_layout.addWidget(self.advanced_frame)
 
@@ -269,6 +282,15 @@ class MainWindow(QMainWindow):
         label = QLabel(text)
         label.setObjectName("MutedLabel")
         return label
+
+    def field_block(self, text, widget):
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(self.field_label(text))
+        layout.addWidget(widget)
+        return container
 
     @Slot(bool)
     def toggle_advanced_options(self, checked):
