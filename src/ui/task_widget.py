@@ -123,6 +123,7 @@ class TaskWidget(QWidget):
         
         self.downloader.progress_update.connect(self.on_progress)
         self.downloader.log_message.connect(self.on_log)
+        self.downloader.status_update.connect(self.on_status)
         self.downloader.finished.connect(self.on_finished)
         self.downloader.error_occurred.connect(self.on_error)
         
@@ -138,6 +139,10 @@ class TaskWidget(QWidget):
     def on_progress(self, percent, speed, eta):
         self.progress_bar.setValue(int(percent))
         self.metrics_label.setText(f"속도: {speed} | 남은 시간: {eta}")
+
+    @Slot(str)
+    def on_status(self, status):
+        self.status_label.setText(status)
 
     @Slot(str)
     def on_log(self, msg):

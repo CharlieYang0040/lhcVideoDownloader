@@ -17,8 +17,13 @@ class VideoDownloader(QObject):
     """
     progress_update = Signal(float, str, str) # progress %, speed, eta
     log_message = Signal(str)
+    status_update = Signal(str)
     finished = Signal()
     error_occurred = Signal(str)
+
+    _yt_dlp_update_lock = threading.Lock()
+    _yt_dlp_update_checked = False
+    _yt_dlp_last_version = None
 
     def __init__(self, url, path, audio_only, cookies, codec, preset, target_ext, overwrite=False, threads=1, fragments=5):
         super().__init__()
@@ -38,6 +43,143 @@ class VideoDownloader(QObject):
         self.current_filename = None
         self.logger = logging.getLogger(self.__class__.__name__)
 
+    @staticmethod
+    def create_startupinfo():
+        if os.name != 'nt':
+            return None
+
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        return startupinfo
+
+    def get_ytdlp_version(self, yt_dlp_path, encoding, startupinfo):
+        try:
+            result = subprocess.run(
+                [yt_dlp_path, '--version'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding=encoding,
+                errors='replace',
+                startupinfo=startupinfo,
+                timeout=20
+            )
+        except subprocess.TimeoutExpired:
+            self.log_message.emit("yt-dlp version check timed out.")
+            return None
+        except Exception as e:
+            self.log_message.emit(f"yt-dlp version check failed: {e}")
+            return None
+
+        if result.returncode != 0:
+            output = (result.stdout or '').strip()
+            self.log_message.emit(f"yt-dlp version check failed with code {result.returncode}: {output}")
+            return None
+
+        version_lines = [line.strip() for line in (result.stdout or '').splitlines() if line.strip()]
+        return version_lines[-1] if version_lines else None
+
+    def run_ytdlp_update(self, yt_dlp_path, encoding, startupinfo):
+        self.log_message.emit("Checking for yt-dlp updates...")
+        update_process = None
+
+        try:
+            update_process = subprocess.Popen(
+                [yt_dlp_path, '-U'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding=encoding,
+                errors='replace',
+                startupinfo=startupinfo
+            )
+            self.process = update_process
+
+            try:
+                output, _ = update_process.communicate(timeout=120)
+            except subprocess.TimeoutExpired:
+                update_process.kill()
+                output, _ = update_process.communicate()
+                for line in (output or '').splitlines():
+                    line = line.strip()
+                    if line:
+                        self.logger.debug(f"[yt-dlp update] {line}")
+                        self.log_message.emit(f"[yt-dlp update] {line}")
+                self.log_message.emit("yt-dlp update timed out. Continuing with the installed version.")
+                return True
+
+            for line in (output or '').splitlines():
+                line = line.strip()
+                if line:
+                    self.logger.debug(f"[yt-dlp update] {line}")
+                    self.log_message.emit(f"[yt-dlp update] {line}")
+
+            if not self.is_running:
+                return False
+
+            rc = update_process.returncode
+
+            if rc == 0:
+                self.log_message.emit("yt-dlp update check completed.")
+            else:
+                self.log_message.emit(f"yt-dlp update failed with code {rc}. Continuing with the installed version.")
+
+            return True
+
+        except Exception as e:
+            self.logger.warning("yt-dlp update failed", exc_info=True)
+            self.log_message.emit(f"yt-dlp update failed: {e}. Continuing with the installed version.")
+            return True
+        finally:
+            if update_process is not None and self.process is update_process:
+                self.process = None
+
+    def ensure_ytdlp_updated(self, yt_dlp_path, encoding, startupinfo):
+        self.status_update.emit("업데이트 확인")
+        current_version = self.get_ytdlp_version(yt_dlp_path, encoding, startupinfo)
+        if current_version:
+            self.log_message.emit(f"yt-dlp current version: {current_version}")
+
+        downloader_type = type(self)
+        if downloader_type._yt_dlp_update_checked:
+            version = downloader_type._yt_dlp_last_version or current_version or "unknown"
+            self.log_message.emit(f"yt-dlp update already checked this session. Version: {version}")
+            return self.is_running
+
+        if downloader_type._yt_dlp_update_lock.locked():
+            self.log_message.emit("Waiting for another task to finish checking yt-dlp updates...")
+
+        while self.is_running:
+            if downloader_type._yt_dlp_update_lock.acquire(timeout=0.2):
+                break
+        else:
+            return False
+
+        try:
+            if downloader_type._yt_dlp_update_checked:
+                version = downloader_type._yt_dlp_last_version or current_version or "unknown"
+                self.log_message.emit(f"yt-dlp update already checked this session. Version: {version}")
+                return self.is_running
+
+            update_completed = self.run_ytdlp_update(yt_dlp_path, encoding, startupinfo)
+            if not update_completed or not self.is_running:
+                return False
+
+            latest_version = self.get_ytdlp_version(yt_dlp_path, encoding, startupinfo)
+            if latest_version:
+                downloader_type._yt_dlp_last_version = latest_version
+                if current_version and latest_version != current_version:
+                    self.log_message.emit(f"yt-dlp updated: {current_version} -> {latest_version}")
+                else:
+                    self.log_message.emit(f"yt-dlp ready. Version: {latest_version}")
+            else:
+                downloader_type._yt_dlp_last_version = current_version
+
+            downloader_type._yt_dlp_update_checked = True
+            return True
+        finally:
+            downloader_type._yt_dlp_update_lock.release()
+
     def start_download(self):
         self.is_running = True
         self.logger.debug(f"Starting download for URL: {self.url}")
@@ -50,23 +192,27 @@ class VideoDownloader(QObject):
         # Check dependencies
         if not yt_dlp_path or not os.path.exists(yt_dlp_path):
             self.error_occurred.emit("yt-dlp.exe not found.")
+            self.is_running = False
+            return
+
+        # Encoding for subprocess
+        # Windows console often uses cp949/cp950 for Korean
+        encoding = locale.getpreferredencoding()
+        startupinfo = self.create_startupinfo()
+
+        if not self.ensure_ytdlp_updated(yt_dlp_path, encoding, startupinfo):
             return
 
         # JS Runtime Check
         js_runtime = check_js_runtime()
         if not js_runtime:
              self.error_occurred.emit("Javascript runtime not found. Deno or Node.js is required.")
+             self.is_running = False
              return
             
         # Build Command
         cmd = [yt_dlp_path, '--newline'] # newline for easier parsing
-        
-        # Encoding for subprocess
-        # Windows console often uses cp949/cp950 for Korean
-        encoding = locale.getpreferredencoding()
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        
+
         # Args
         cmd.extend(['-o', f"{self.download_path}\\%(title)s.%(ext)s"])
         
@@ -144,6 +290,7 @@ class VideoDownloader(QObject):
         
         self.logger.debug(f"Command: {' '.join(cmd)}")
         self.log_message.emit(f"Command constructed.")
+        self.status_update.emit("다운로드 중")
         
         final_filename = None
         skipped = False
@@ -229,6 +376,7 @@ class VideoDownloader(QObject):
 
     def perform_transcode(self, final_filename, ffmpeg_path, encoding, startupinfo):
         self.log_message.emit(f"Starting Post-Process: {self.codec} (Threads: {self.threads})")
+        self.status_update.emit("인코딩 중")
         self.progress_update.emit(0, "Encoding...", "Calculating...")
 
         base, ext = os.path.splitext(final_filename)
