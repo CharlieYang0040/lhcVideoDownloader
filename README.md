@@ -120,7 +120,7 @@ python setup_binaries.py
 python setup_binaries.py --no-ytdlp-update
 ```
 
-> `setup_binaries.py`는 `ffmpeg.exe`와 `ffprobe.exe`가 정상 실행되면 다시 받지 않으며, `yt-dlp.exe`와 `deno.exe`가 없을 때 최신 릴리스를 내려받습니다.
+> `setup_binaries.py`는 `ffmpeg.exe`와 `ffprobe.exe`가 정상 실행되면 다시 받지 않으며, 누락/손상 시 `yt-dlp/FFmpeg-Builds` 공용(shared) 빌드를 내려받습니다. `yt-dlp.exe`와 `deno.exe`가 없을 때 최신 릴리스를 내려받습니다.
 
 예상 프로젝트 구조:
 
@@ -128,7 +128,7 @@ python setup_binaries.py --no-ytdlp-update
 lhcVideoDownloader/
 ├── libs/
 │   ├── deno/deno.exe
-│   ├── ffmpeg/ffmpeg.exe, ffprobe.exe
+│   ├── ffmpeg/ffmpeg.exe, ffprobe.exe, *.dll
 │   └── yt-dlp/yt-dlp.exe
 ├── resources/
 ├── src/
