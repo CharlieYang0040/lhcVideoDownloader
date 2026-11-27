@@ -1,6 +1,7 @@
 import os
 import sys
 import shutil
+import subprocess
 import appdirs
 
 APP_NAME = "LHCVideoDownloader"
@@ -26,6 +27,11 @@ def get_user_data_path(*parts):
     """Get a user-writable app data path."""
     base_dir = os.environ.get("LHCVD_USER_DATA_DIR") or appdirs.user_data_dir(APP_NAME, APP_AUTHOR)
     return os.path.join(base_dir, *parts)
+
+
+def get_logs_dir(*parts):
+    """Get the user-writable logs directory path."""
+    return get_user_data_path("logs", *parts)
 
 def get_default_download_path():
     downloads_dir = os.path.join(os.path.expanduser("~"), "Downloads")
@@ -86,3 +92,53 @@ def check_js_runtime():
     if shutil.which("node"):
         return "node"
     return None
+
+
+def create_startupinfo():
+    if os.name != 'nt':
+        return None
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    return startupinfo
+
+
+def terminate_process_tree(process, logger=None):
+    if process is None:
+        return
+
+    try:
+        if process.poll() is not None:
+            return
+
+        if os.name == 'nt':
+            subprocess.run(
+                ['taskkill', '/F', '/T', '/PID', str(process.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                startupinfo=create_startupinfo(),
+                timeout=5,
+            )
+            try:
+                process.wait(timeout=3)
+            except subprocess.SubprocessError:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+        else:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.SubprocessError:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+    except Exception as e:
+        if logger:
+            logger.debug(f"Failed to terminate process tree cleanly: {e}")
+        try:
+            process.kill()
+        except OSError:
+            pass

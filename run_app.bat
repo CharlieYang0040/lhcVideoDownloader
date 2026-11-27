@@ -13,7 +13,7 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 
 echo Checking for external binaries (yt-dlp, ffmpeg, deno)...
-python setup_binaries.py
+python setup_binaries.py --no-ytdlp-update
 
 
 echo Starting LHC Video Downloader...

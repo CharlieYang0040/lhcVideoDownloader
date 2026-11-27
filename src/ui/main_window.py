@@ -10,7 +10,8 @@ from src.ui.task_widget import TaskWidget
 from src.ui.login_dialog import LoginDialog
 from src.ui.theme import APP_STYLESHEET
 from src.utils.config import ConfigManager
-from src.utils.helpers import find_cookie_file_path
+from src.core.auth_manager import clear_saved_cookies, inspect_cookie_file
+from src.core.downloader import YtDlpUpdateThread
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -38,6 +39,19 @@ class MainWindow(QMainWindow):
         title_label.setObjectName("AppTitle")
         header_layout.addWidget(title_label)
         header_layout.addStretch()
+        self.header_auth_label = QLabel("YouTube: 확인 중")
+        self.header_auth_label.setObjectName("MutedLabel")
+        self.header_login_btn = QPushButton("YouTube 로그인")
+        self.header_login_btn.setObjectName("QueueButton")
+        self.header_login_btn.setCursor(Qt.PointingHandCursor)
+        self.header_login_btn.setToolTip("성인 인증/연령 제한 영상 다운로드를 위해 YouTube에 로그인합니다.")
+        self.header_login_btn.clicked.connect(self.open_login_dialog)
+        self.ytdlp_status_label = QLabel("yt-dlp 업데이트 확인 중...")
+        self.ytdlp_status_label.setObjectName("MutedLabel")
+        header_layout.addWidget(self.header_auth_label, alignment=Qt.AlignVCenter)
+        header_layout.addWidget(self.header_login_btn, alignment=Qt.AlignVCenter)
+        header_layout.addSpacing(12)
+        header_layout.addWidget(self.ytdlp_status_label, alignment=Qt.AlignVCenter | Qt.AlignRight)
         main_layout.addLayout(header_layout)
 
         # 1. Command Area
@@ -124,21 +138,35 @@ class MainWindow(QMainWindow):
 
         # Auth
         self.auth_type_combo = QComboBox()
-        self.auth_type_combo.addItems(["앱 내 로그인 (권장)", "Firefox", "파일 (Cookies.txt)", "인증 안 함"])
+        self.auth_type_combo.addItems([
+            "자동 (필요 시 인증 · 권장)",
+            "저장된 쿠키 항상 사용",
+            "Firefox (자동)",
+            "파일 (Cookies.txt)",
+            "인증 안 함",
+        ])
 
-        # Restore Auth
+        # Restore Auth (migrate legacy values)
         saved_auth = self.config.get("last_auth_method")
-        # Default to "인증 안 함" (No Auth) if not set
-        if not saved_auth:
-            saved_auth = "인증 안 함"
+        auth_migration = {
+            "": "자동 (필요 시 인증 · 권장)",
+            None: "자동 (필요 시 인증 · 권장)",
+            "None": "자동 (필요 시 인증 · 권장)",
+            "앱 내 로그인 (권장)": "저장된 쿠키 항상 사용",
+            "Firefox": "Firefox (자동)",
+        }
+        saved_auth = auth_migration.get(saved_auth, saved_auth)
 
         index = self.auth_type_combo.findText(saved_auth)
         if index >= 0:
             self.auth_type_combo.setCurrentIndex(index)
         else:
-            self.auth_type_combo.setCurrentIndex(3) # Default to No Auth
+            self.auth_type_combo.setCurrentIndex(0)
 
-        self.auth_type_combo.setToolTip("연령 제한 영상을 위한 인증 방식입니다.\n'앱 내 로그인'을 추천합니다.")
+        self.auth_type_combo.setToolTip(
+            "성인 인증/연령 제한 영상을 위한 인증 방식입니다.\n"
+            "'자동' 모드는 일반 영상을 쿠키 없이 받고, 필요할 때만 저장된 쿠키로 자동 재시도합니다."
+        )
         self.auth_type_combo.currentIndexChanged.connect(self.toggle_auth_input)
 
         self.auth_input = QWidget()
@@ -147,12 +175,20 @@ class MainWindow(QMainWindow):
         self.auth_input_layout.setSpacing(6)
 
         # --- Auth Widgets ---
-        self.login_btn = QPushButton("로그인 (Log In)")
+        self.login_btn = QPushButton("YouTube 로그인")
         self.login_btn.setObjectName("SecondaryButton")
-        self.login_btn.setToolTip("유튜브 로그인 창을 엽니다.")
+        self.login_btn.setToolTip("격리된 브라우저를 통해 안전하게 YouTube 로그인 쿠키를 저장합니다.")
         self.login_btn.clicked.connect(self.open_login_dialog)
 
-        self.firefox_info = QLabel("(자동 감지)")
+        self.logout_btn = QPushButton("로그아웃")
+        self.logout_btn.setObjectName("SecondaryButton")
+        self.logout_btn.setToolTip("저장된 YouTube 로그인 쿠키를 삭제합니다.")
+        self.logout_btn.clicked.connect(self.clear_cookies)
+
+        self.cookie_status_info = QLabel("")
+        self.cookie_status_info.setObjectName("MutedLabel")
+
+        self.firefox_info = QLabel("(자동 감지 · App-Bound 영향 없음)")
         self.firefox_info.setObjectName("MutedLabel")
 
         self.cookie_file_edit = QLineEdit()
@@ -164,7 +200,8 @@ class MainWindow(QMainWindow):
         self.cookie_file_btn.setIconSize(QSize(16, 16))
         self.cookie_file_btn.clicked.connect(self.browse_cookie_file)
 
-        self.toggle_auth_input() # Refresh auth UI
+        self.toggle_auth_input()  # Refresh auth UI
+        self.refresh_auth_status()
 
         # Encoding Codec
         self.codec_combo = QComboBox()
@@ -273,6 +310,12 @@ class MainWindow(QMainWindow):
         self.task_list.setSpacing(6)
         main_layout.addWidget(self.task_list)
 
+        # Startup yt-dlp update check (once per app launch)
+        self.ytdlp_update_thread = YtDlpUpdateThread(self)
+        self.ytdlp_update_thread.status_changed.connect(self.ytdlp_status_label.setText)
+        self.ytdlp_update_thread.log_message.connect(self.logger.info)
+        self.ytdlp_update_thread.start()
+
     def section_label(self, text):
         label = QLabel(text)
         label.setObjectName("SectionTitle")
@@ -320,6 +363,10 @@ class MainWindow(QMainWindow):
             for task_widget in running_tasks:
                 task_widget.stop_for_shutdown()
 
+        if hasattr(self, "ytdlp_update_thread") and self.ytdlp_update_thread.isRunning():
+            self.ytdlp_update_thread.stop()
+            self.ytdlp_update_thread.wait(3000)
+
         # Save settings on exit
         self.config.set("last_download_path", self.path_input.text())
         self.config.set("last_auth_method", self.auth_type_combo.currentText())
@@ -339,6 +386,25 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "오류", "폴더가 존재하지 않습니다.")
 
     @Slot()
+    def refresh_auth_status(self):
+        info = inspect_cookie_file()
+        if info["valid"]:
+            self.header_auth_label.setStyleSheet("color: #9ff0b5;")
+            self.header_auth_label.setText(f"YouTube: {info['summary']}")
+            self.header_login_btn.setText("재로그인")
+        elif info["expired"]:
+            self.header_auth_label.setStyleSheet("color: #ffd28a;")
+            self.header_auth_label.setText("YouTube: 쿠키 만료됨")
+            self.header_login_btn.setText("다시 로그인")
+        else:
+            self.header_auth_label.setStyleSheet("")
+            self.header_auth_label.setText("YouTube: 로그인 안 됨")
+            self.header_login_btn.setText("YouTube 로그인")
+
+        self.cookie_status_info.setText(info["summary"])
+        self.logout_btn.setEnabled(info["exists"])
+
+    @Slot()
     def toggle_auth_input(self):
         # Clear layout
         while self.auth_input_layout.count():
@@ -349,9 +415,11 @@ class MainWindow(QMainWindow):
 
         auth_type = self.auth_type_combo.currentText()
 
-        if auth_type == "앱 내 로그인 (권장)":
+        if auth_type in ("자동 (필요 시 인증 · 권장)", "저장된 쿠키 항상 사용"):
             self.auth_input_layout.addWidget(self.login_btn)
-        elif auth_type == "Firefox":
+            self.auth_input_layout.addWidget(self.logout_btn)
+            self.auth_input_layout.addWidget(self.cookie_status_info)
+        elif auth_type == "Firefox (자동)":
             self.auth_input_layout.addWidget(self.firefox_info)
         elif auth_type == "파일 (Cookies.txt)":
             self.auth_input_layout.addWidget(self.cookie_file_edit)
@@ -360,7 +428,22 @@ class MainWindow(QMainWindow):
     @Slot()
     def open_login_dialog(self):
         dialog = LoginDialog(self)
-        dialog.exec()
+        accepted = dialog.exec() == LoginDialog.DialogCode.Accepted
+        self.refresh_auth_status()
+        return accepted
+
+    @Slot()
+    def clear_cookies(self):
+        reply = QMessageBox.question(
+            self,
+            "로그아웃",
+            "저장된 YouTube 로그인 쿠키를 삭제하시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            clear_saved_cookies()
+            self.refresh_auth_status()
 
     @Slot()
     def browse_cookie_file(self):
@@ -419,45 +502,76 @@ class MainWindow(QMainWindow):
 
         # Auth Logic
         cookies = None
+        fallback_cookies = None
         auth_type = self.auth_type_combo.currentText()
 
-        if auth_type == "앱 내 로그인 (권장)":
-            cookie_path = find_cookie_file_path()
-            if os.path.exists(cookie_path):
-                cookies = f"file:{cookie_path}"
+        if auth_type == "자동 (필요 시 인증 · 권장)":
+            cookie_info = inspect_cookie_file()
+            if cookie_info["valid"]:
+                fallback_cookies = f"file:{cookie_info['path']}"
+
+        elif auth_type == "저장된 쿠키 항상 사용":
+            cookie_info = inspect_cookie_file()
+            if cookie_info["valid"]:
+                cookies = f"file:{cookie_info['path']}"
             else:
-                reply = QMessageBox.question(self, "로그인 필요",
-                                     "앱 내 로그인을 선택하셨지만 저장된 쿠키가 없습니다.\n"
-                                     "지금 로그인하시겠습니까?",
-                                     QMessageBox.Yes | QMessageBox.No)
+                reply = QMessageBox.question(
+                    self,
+                    "로그인 필요",
+                    "저장된 쿠키 항상 사용을 선택하셨지만 유효한 로그인 쿠키가 없습니다.\n"
+                    "지금 로그인하시겠습니까?",
+                    QMessageBox.Yes | QMessageBox.No,
+                )
                 if reply == QMessageBox.Yes:
                     self.open_login_dialog()
-                    cookie_path = find_cookie_file_path()
-                    if os.path.exists(cookie_path):
-                        cookies = f"file:{cookie_path}"
+                    cookie_info = inspect_cookie_file()
+                    if cookie_info["valid"]:
+                        cookies = f"file:{cookie_info['path']}"
                     else:
                         return
                 else:
                     return
 
-        elif auth_type == "Firefox":
+        elif auth_type == "Firefox (자동)":
             cookies = "browser:firefox"
 
         elif auth_type == "파일 (Cookies.txt)":
             cookie_file = self.cookie_file_edit.text().strip()
             if cookie_file:
-                 cookies = f"file:{cookie_file}"
+                cookies = f"file:{cookie_file}"
 
         codec = self.codec_combo.currentText()
         preset = self.preset_combo.currentText()
+
+        if not audio_only and target_ext == "webm" and codec not in ("변환 없음", "None", "VP9"):
+            QMessageBox.warning(
+                self,
+                "형식/코덱 호환 오류",
+                "WebM 형식은 VP9 코덱 또는 '변환 없음'만 지원합니다.\n"
+                "형식을 MP4/MKV로 변경하거나 코덱을 VP9/변환 없음으로 선택해주세요."
+            )
+            return
 
         overwrite = self.overwrite_check.isChecked()
         threads = self.threads_spin.value()
         fragments = self.fragments_spin.value()
 
         # Create Task Widget
-        task_widget = TaskWidget(url, path, audio_only, cookies, codec, preset, target_ext, overwrite, threads, fragments)
+        task_widget = TaskWidget(
+            url,
+            path,
+            audio_only,
+            cookies,
+            codec,
+            preset,
+            target_ext,
+            overwrite,
+            threads,
+            fragments,
+            fallback_cookies=fallback_cookies,
+        )
         task_widget.removed.connect(self.remove_task)
+        task_widget.login_retry_requested.connect(self.handle_login_and_retry)
 
         # Add to List
         item = QListWidgetItem(self.task_list)
@@ -471,6 +585,13 @@ class MainWindow(QMainWindow):
 
         # Clear Input? No, keep it in combo
         # self.url_input.clear()
+
+    @Slot(QWidget)
+    def handle_login_and_retry(self, task_widget):
+        if self.open_login_dialog():
+            info = inspect_cookie_file()
+            if info["valid"]:
+                task_widget.retry_with_cookies(f"file:{info['path']}")
 
     @Slot(QWidget)
     def remove_task(self, widget):

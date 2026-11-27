@@ -1,31 +1,51 @@
+import argparse
 import os
+import shutil
+import subprocess
+import sys
+import tempfile
 import urllib.request
 import zipfile
-import shutil
-import sys
-import subprocess
-import time
+
 
 def download_file(url, dest_path):
     print(f"Downloading {os.path.basename(dest_path)}...")
     urllib.request.urlretrieve(url, dest_path)
     print(f"Downloaded successfully to {dest_path}")
 
-def setup_binaries():
+
+def is_executable_working(exe_path, args=("-version",), timeout=10):
+    if not os.path.isfile(exe_path):
+        return False
+    try:
+        result = subprocess.run(
+            [exe_path, *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def setup_binaries(skip_ytdlp_update=False):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     libs_dir = os.path.join(base_dir, 'libs')
-    
+
     # Define exact expected directories inside `libs`
     ytdlp_dir = os.path.join(libs_dir, 'yt-dlp')
     ffmpeg_dir = os.path.join(libs_dir, 'ffmpeg')
     deno_dir = os.path.join(libs_dir, 'deno')
-    
+
     os.makedirs(ytdlp_dir, exist_ok=True)
     os.makedirs(ffmpeg_dir, exist_ok=True)
     os.makedirs(deno_dir, exist_ok=True)
 
     ytdlp_path = os.path.join(ytdlp_dir, 'yt-dlp.exe')
     ffmpeg_path = os.path.join(ffmpeg_dir, 'ffmpeg.exe')
+    ffprobe_path = os.path.join(ffmpeg_dir, 'ffprobe.exe')
     deno_path = os.path.join(deno_dir, 'deno.exe')
 
     # Download yt-dlp if it doesn't exist
@@ -35,94 +55,81 @@ def setup_binaries():
     else:
         print("yt-dlp.exe is already present.")
 
-    print("Checking for yt-dlp updates...")
-    try:
-        subprocess.run([ytdlp_path, "-U"])
-    except Exception as e:
-        print(f"Failed to update yt-dlp: {e}")
+    if not skip_ytdlp_update:
+        print("Checking for yt-dlp updates...")
+        try:
+            subprocess.run([ytdlp_path, "-U"])
+        except Exception as e:
+            print(f"Failed to update yt-dlp: {e}")
 
     # Download Deno if it doesn't exist
     if not os.path.exists(deno_path):
         print("Downloading Deno JavaScript runtime...")
         deno_zip_url = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"
         deno_zip_path = os.path.join(libs_dir, 'deno.zip')
-        download_file(deno_zip_url, deno_zip_path)
-
-        print("Extracting Deno...")
-        with zipfile.ZipFile(deno_zip_path, 'r') as zip_ref:
-            zip_ref.extractall(deno_dir)
-        os.remove(deno_zip_path)
-        print("Deno setup completed.")
+        try:
+            download_file(deno_zip_url, deno_zip_path)
+            print("Extracting Deno...")
+            with zipfile.ZipFile(deno_zip_path, 'r') as zip_ref:
+                zip_ref.extractall(deno_dir)
+            print("Deno setup completed.")
+        finally:
+            if os.path.exists(deno_zip_path):
+                os.remove(deno_zip_path)
     else:
         print("deno.exe is already present.")
 
-    # Download ffmpeg if it doesn't exist or needs update
-    ffmpeg_needs_update = False
-    if os.path.exists(ffmpeg_path):
-        try:
-            # Get latest version from gyan.dev
-            req = urllib.request.Request("https://www.gyan.dev/ffmpeg/builds/release-version", headers={'User-Agent': 'Mozilla/5.0'})
-            remote_version = urllib.request.urlopen(req, timeout=5).read().decode('utf-8').strip()
-            
-            # Get local version
-            out = subprocess.check_output([ffmpeg_path, "-version"], text=True)
-            # Example output: ffmpeg version 8.1-essentials_build-www.gyan.dev Copyright...
-            local_version_full = out.split()[2]
-            local_version = local_version_full.split('-')[0]
-            
-            if local_version != remote_version:
-                print(f"ffmpeg update available: {local_version} -> {remote_version}")
-                ffmpeg_needs_update = True
-            else:
-                print(f"ffmpeg.exe is up to date (version: {local_version}).")
-        except Exception as e:
-            print(f"Failed to check ffmpeg version: {e}")
-            # Fallback to checking age if version check fails
-            file_age_days = (time.time() - os.path.getmtime(ffmpeg_path)) / (60 * 60 * 24)
-            if file_age_days > 30:
-                print(f"ffmpeg is {file_age_days:.1f} days old. Marking for update as fallback.")
-                ffmpeg_needs_update = True
-            else:
-                print(f"ffmpeg.exe is up to date (fallback age check: {file_age_days:.1f} days).")
-
-    if not os.path.exists(ffmpeg_path) or ffmpeg_needs_update:
-        print("Downloading ffmpeg...")
-        # Get gyan.dev latest ffmpeg essentials build
+    # Only download ffmpeg if missing or not executable/working
+    if is_executable_working(ffmpeg_path) and is_executable_working(ffprobe_path):
+        print("ffmpeg.exe and ffprobe.exe are already present and working.")
+    else:
+        print("ffmpeg is missing or not working. Downloading ffmpeg...")
         ffmpeg_zip_url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
         zip_path = os.path.join(libs_dir, 'ffmpeg.zip')
-        
-        download_file(ffmpeg_zip_url, zip_path)
-        
-        print("Extracting ffmpeg...")
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(libs_dir)
-            
-        os.remove(zip_path)
-        
-        # Determine the extracted folder name (it contains version, so it varies)
-        extracted_dirs = [d for d in os.listdir(libs_dir) if os.path.isdir(os.path.join(libs_dir, d)) and 'ffmpeg' in d and d != 'ffmpeg']
-        if extracted_dirs:
-            extracted_folder = os.path.join(libs_dir, extracted_dirs[0])
-            bin_dir = os.path.join(extracted_folder, 'bin')
-            
-            # Move binaries to expected location
-            for exe in ['ffmpeg.exe', 'ffprobe.exe', 'ffplay.exe']:
-                src = os.path.join(bin_dir, exe)
-                if os.path.exists(src):
-                    shutil.move(src, os.path.join(ffmpeg_dir, exe))
-                    
-            # Cleanup the extracted directory
-            shutil.rmtree(extracted_folder)
-            print("ffmpeg setup completed.")
-        else:
-            print("Failed to find extracted ffmpeg folder.")
-    else:
-         print("ffmpeg.exe is already present.")
+
+        try:
+            download_file(ffmpeg_zip_url, zip_path)
+            print("Extracting ffmpeg...")
+            with tempfile.TemporaryDirectory(dir=libs_dir) as temp_extract_dir:
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(temp_extract_dir)
+
+                bin_dir = None
+                for root, dirs, _ in os.walk(temp_extract_dir):
+                    if 'bin' in dirs:
+                        candidate = os.path.join(root, 'bin')
+                        if os.path.isfile(os.path.join(candidate, 'ffmpeg.exe')):
+                            bin_dir = candidate
+                            break
+
+                if bin_dir:
+                    for exe in ['ffmpeg.exe', 'ffprobe.exe', 'ffplay.exe']:
+                        src = os.path.join(bin_dir, exe)
+                        if os.path.isfile(src):
+                            dst = os.path.join(ffmpeg_dir, exe)
+                            tmp_dst = dst + ".tmp"
+                            shutil.copy2(src, tmp_dst)
+                            os.replace(tmp_dst, dst)
+                    print("ffmpeg setup completed.")
+                else:
+                    raise RuntimeError("Failed to find extracted ffmpeg bin directory.")
+        finally:
+            if os.path.exists(zip_path):
+                os.remove(zip_path)
+
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Setup external binaries")
+    parser.add_argument(
+        "--no-ytdlp-update",
+        action="store_true",
+        help="Skip running yt-dlp -U during setup (handled at GUI startup).",
+    )
+    args = parser.parse_args()
+
     print("Checking external binaries setup (yt-dlp, ffmpeg, deno)...")
     try:
-        setup_binaries()
+        setup_binaries(skip_ytdlp_update=args.no_ytdlp_update)
         print("Binary setup verified.")
     except Exception as e:
         print(f"Error checking binaries: {e}")

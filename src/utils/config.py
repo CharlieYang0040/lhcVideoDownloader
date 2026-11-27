@@ -11,7 +11,7 @@ class ConfigManager:
         
         self.defaults = {
             "last_download_path": get_default_download_path(),
-            "last_auth_method": "None", # "APP Login (Rec)", "Firefox", "File", "None"
+            "last_auth_method": "자동 (필요 시 인증 · 권장)",
             "cookie_file_path": "",
             "url_history": [],
             "post_process": "None",
