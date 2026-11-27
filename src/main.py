@@ -74,7 +74,8 @@ def main():
         sys.exit(exit_code)
     except Exception as e:
         logger.critical(f"CRITICAL ERROR: {e}", exc_info=True)
-        input("Press Enter to exit...")
+        if sys.stdin and sys.stdin.isatty():
+            input("Press Enter to exit...")
 
 
 if __name__ == "__main__":

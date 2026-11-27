@@ -5,11 +5,12 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QComboBox, QLabel, QFileDialog, QMessageBox, QApplication,
                                QCheckBox, QSpinBox, QFrame, QGridLayout, QToolButton, QStyle)
 from PySide6.QtCore import Slot, QSize, QUrl, Qt
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QIcon
 from src.ui.task_widget import TaskWidget
 from src.ui.login_dialog import LoginDialog
 from src.ui.theme import APP_STYLESHEET
 from src.utils.config import ConfigManager
+from src.utils.helpers import get_bundle_path
 from src.core.auth_manager import clear_saved_cookies, inspect_cookie_file
 from src.core.downloader import YtDlpUpdateThread
 
@@ -20,6 +21,9 @@ class MainWindow(QMainWindow):
         self.logger.debug("Initializing MainWindow...")
         self.setWindowTitle("LHC Video Downloader")
         self.resize(1000, 720)
+        icon_path = os.path.join(get_bundle_path(), "resources", "icon.ico")
+        if os.path.isfile(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
 
         # Load Config
         self.config = ConfigManager()

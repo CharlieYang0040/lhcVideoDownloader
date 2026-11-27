@@ -177,3 +177,7 @@ cython_debug/
 
 *cookies.txt
 *user_agent.txt
+
+# Release installers / archives
+installer_output/
+LHCVideoDownloader_*.zip

@@ -2,7 +2,7 @@
 ; SEE THE DOCUMENTATION FOR DETAILS ON CREATING INNO SETUP SCRIPT FILES!
 
 #define MyAppName "LHC Video Downloader"
-#define MyAppVersion "2.0"
+#define MyAppVersion "2.0.0"
 #define MyAppPublisher "LHCinema"
 #define MyAppURL "https://github.com/CharlieYang0040/lhcVideoDownloader"
 #define MyAppExeName "LHCVideoDownloader.exe"

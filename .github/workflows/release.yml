@@ -1,0 +1,56 @@
+name: Build and Release Windows Portable
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag name (e.g. v2.0.0)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-build.txt
+
+      - name: Download external runtime binaries
+        run: python setup_binaries.py --no-ytdlp-update
+
+      - name: Build executable with PyInstaller
+        run: pyinstaller --clean --noconfirm LHCVideoDownloader.spec
+
+      - name: Package portable ZIP
+        shell: pwsh
+        run: |
+          $tag = "${{ inputs.tag }}"
+          if (-not $tag) { $tag = "${{ github.ref_name }}" }
+          $zipName = "LHCVideoDownloader_$tag.zip"
+          Compress-Archive -Path "dist\LHCVideoDownloader\*" -DestinationPath $zipName -Force
+          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "ZIP_NAME=$zipName" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: LHC Video Downloader ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          files: ${{ env.ZIP_NAME }}

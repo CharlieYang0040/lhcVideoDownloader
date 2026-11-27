@@ -1,3 +1,4 @@
+import importlib.util
 import re
 from PySide6.QtCore import QTimer, QThread, QUrl, Qt, Signal, Slot
 from PySide6.QtWidgets import (
@@ -80,6 +81,7 @@ class LoginDialog(QDialog):
         self.setStyleSheet(APP_STYLESHEET)
 
         self.browsers = find_chromium_browsers()
+        self._has_webengine = importlib.util.find_spec("PySide6.QtWebEngineWidgets") is not None
         self.cdp_session = BrowserCDPLoginSession()
         self._launch_worker = None
         self._poll_worker = None
@@ -119,8 +121,37 @@ class LoginDialog(QDialog):
 
         if self.browsers:
             self.stack.setCurrentWidget(self.cdp_page)
-        else:
+        elif self._has_webengine:
             self._switch_to_webengine()
+        else:
+            self.no_browser_page = self._build_no_browser_page()
+            self.stack.addWidget(self.no_browser_page)
+            self.stack.setCurrentWidget(self.no_browser_page)
+
+    def _build_no_browser_page(self):
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        title = QLabel("지원되는 브라우저를 찾을 수 없습니다")
+        title.setObjectName("AppTitle")
+        layout.addWidget(title)
+
+        msg = QLabel(
+            "시스템에서 Google Chrome, Microsoft Edge 또는 Brave를 찾지 못했습니다.\n\n"
+            "• Google Chrome 또는 Microsoft Edge를 설치한 뒤 다시 로그인을 시도하거나,\n"
+            "• 고급 옵션(Advanced)에서 'Firefox (자동)' 또는 '파일 (Cookies.txt)' 방식을 사용해주세요."
+        )
+        msg.setWordWrap(True)
+        layout.addWidget(msg)
+        layout.addStretch()
+
+        close_btn = QPushButton("닫기")
+        close_btn.setObjectName("SecondaryButton")
+        close_btn.clicked.connect(self.reject)
+        layout.addWidget(close_btn, alignment=Qt.AlignRight)
+        return container
 
     def _build_cdp_page(self):
         container = QWidget()
@@ -186,15 +217,16 @@ class LoginDialog(QDialog):
         layout.addLayout(action_row)
 
         footer_row = QHBoxLayout()
-        self.use_webengine_btn = QPushButton("내장 브라우저로 로그인")
-        self.use_webengine_btn.setObjectName("SecondaryButton")
-        self.use_webengine_btn.clicked.connect(self._switch_to_webengine)
+        if self._has_webengine:
+            self.use_webengine_btn = QPushButton("내장 브라우저로 로그인")
+            self.use_webengine_btn.setObjectName("SecondaryButton")
+            self.use_webengine_btn.clicked.connect(self._switch_to_webengine)
+            footer_row.addWidget(self.use_webengine_btn)
 
         self.cdp_close_btn = QPushButton("닫기")
         self.cdp_close_btn.setObjectName("SecondaryButton")
         self.cdp_close_btn.clicked.connect(self.reject)
 
-        footer_row.addWidget(self.use_webengine_btn)
         footer_row.addStretch()
         footer_row.addWidget(self.cdp_close_btn)
         layout.addLayout(footer_row)

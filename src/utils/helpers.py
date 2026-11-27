@@ -2,7 +2,6 @@ import os
 import sys
 import shutil
 import subprocess
-import appdirs
 
 APP_NAME = "LHCVideoDownloader"
 APP_AUTHOR = "LHCinema"
@@ -23,9 +22,19 @@ def get_app_path():
         return os.path.dirname(sys.executable)
     return get_bundle_path()
 
+def _get_default_user_data_dir(app_name, app_author):
+    if os.name == 'nt':
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        return os.path.join(base, app_author, app_name)
+    if sys.platform == 'darwin':
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", app_name)
+    base = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+    return os.path.join(base, app_name)
+
+
 def get_user_data_path(*parts):
     """Get a user-writable app data path."""
-    base_dir = os.environ.get("LHCVD_USER_DATA_DIR") or appdirs.user_data_dir(APP_NAME, APP_AUTHOR)
+    base_dir = os.environ.get("LHCVD_USER_DATA_DIR") or _get_default_user_data_dir(APP_NAME, APP_AUTHOR)
     return os.path.join(base_dir, *parts)
 
 

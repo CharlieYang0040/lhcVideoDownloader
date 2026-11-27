@@ -103,7 +103,7 @@ def setup_binaries(skip_ytdlp_update=False):
                             break
 
                 if bin_dir:
-                    for exe in ['ffmpeg.exe', 'ffprobe.exe', 'ffplay.exe']:
+                    for exe in ['ffmpeg.exe', 'ffprobe.exe']:
                         src = os.path.join(bin_dir, exe)
                         if os.path.isfile(src):
                             dst = os.path.join(ffmpeg_dir, exe)
